@@ -10,6 +10,8 @@ PORT = "42424"
 [[services]]
 internal_port = 42424
 protocol = "tcp"
+force_https = true
 
 [[services.ports]]
-port = 42424
+port = 443
+handlers = ["tls", "http"]
