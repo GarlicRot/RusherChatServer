@@ -1,0 +1,14 @@
+app = "rusherchatserver"  # Replace with your actual app name from Fly.io
+
+[build]
+builder = "paketobuildpacks/builder:base"
+
+[env]
+PORT = "42424"
+
+[[services]]
+internal_port = 42424
+protocol = "tcp"
+
+[[services.ports]]
+port = 42424
