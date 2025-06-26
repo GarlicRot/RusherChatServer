@@ -1,16 +1,18 @@
-# Use official Gradle image to build the project
+# Stage 1: Build the JAR using Gradle
 FROM gradle:8.4.0-jdk21 AS builder
 COPY --chown=gradle:gradle . /home/gradle/project
 WORKDIR /home/gradle/project
-RUN gradle build --no-daemon
+RUN gradle clean build --no-daemon
 
-# Use a slim JDK to run the app
+# Stage 2: Run the JAR with a minimal image
 FROM eclipse-temurin:21-jdk
 WORKDIR /app
+
+# Copy only the built JAR (assumes only one JAR in the build/libs dir)
 COPY --from=builder /home/gradle/project/build/libs/*.jar app.jar
 
-# Port the chat server listens on
+# The port your app listens on
 EXPOSE 42424
 
-# Run the server
-ENTRYPOINT ["java", "-jar", "app.jar"]
+# Default command to run your application
+CMD ["java", "-jar", "app.jar"]

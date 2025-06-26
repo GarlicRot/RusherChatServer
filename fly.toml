@@ -1,12 +1,15 @@
+app = "rusherchatserver"
+primary_region = "sea"
+
 [build]
-dockerfile = "./Dockerfile"
+dockerfile = "Dockerfile"
+
+[env]
+PORT = "42424"
 
 [[services]]
 internal_port = 42424
 protocol = "tcp"
 
 [[services.ports]]
-port = 80
-
-[[services.ports]]
-port = 443
+port = 42424
