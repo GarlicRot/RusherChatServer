@@ -16,7 +16,7 @@ public class ChatServer extends WebSocketServer {
     private static final int HISTORY_LIMIT = 50;
 
     public ChatServer() {
-        super(new InetSocketAddress(PORT));
+        super(new InetSocketAddress("0.0.0.0", PORT));
     }
 
     public static void main(String[] args) {
