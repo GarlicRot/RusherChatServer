@@ -102,14 +102,6 @@ public class ChatServer extends WebSocketServer {
                 LOGGER.info("Updated username to: " + incoming.getUsername() + " for " + ipPort);
             }
 
-            // Handle /online or /o command
-            if (incoming.getContent().equalsIgnoreCase("/online") || incoming.getContent().equalsIgnoreCase("/o")) {
-                String userList = String.join(", ", clientUsernames.values());
-                conn.send(gson.toJson(new Message("[System]", "Online users: " + (userList.isEmpty() ? "None" : userList), "§e[System]§r")));
-                LOGGER.info("Sent online users list to " + rawUsername + " (" + ipPort + "): " + userList);
-                return;
-            }
-
             String coloredUsername = UserColorManager.getColoredUsername(rawUsername);
             Message colored = new Message(rawUsername, incoming.getContent(), coloredUsername, incoming.getTarget(), incoming.isWhisper());
 
