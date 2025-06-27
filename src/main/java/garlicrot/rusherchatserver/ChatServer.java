@@ -6,8 +6,7 @@ import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
 
 import java.net.InetSocketAddress;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Logger;
@@ -21,6 +20,7 @@ public class ChatServer extends WebSocketServer {
     private static final int PORT = 42424;
     private static final List<WebSocket> clients = new CopyOnWriteArrayList<>();
     private static final Map<WebSocket, String> clientUsernames = new ConcurrentHashMap<>(); // Map WebSocket to username
+    private static final Map<WebSocket, Queue<String>> messageQueue = new ConcurrentHashMap<>(); // Queue for unprocessed messages
 
     static {
         Logger logger = Logger.getLogger("garlicrot.rusherchatserver");
@@ -58,11 +58,13 @@ public class ChatServer extends WebSocketServer {
     public void onOpen(WebSocket conn, ClientHandshake handshake) {
         LOGGER.info("New WebSocket connection: " + conn.getRemoteSocketAddress());
         clients.add(conn);
+        messageQueue.put(conn, new LinkedList<>()); // Initialize message queue for new connection
         // Check for handshake parameter first
         String username = handshake.getFieldValue("username");
         if (username != null && !username.isEmpty()) {
             clientUsernames.put(conn, username);
             LOGGER.info("Registered username: " + username + " for connection " + conn.getRemoteSocketAddress());
+            processQueuedMessages(conn); // Process any queued messages
         } else {
             LOGGER.info("No username provided in handshake, waiting for initial message from " + conn.getRemoteSocketAddress());
         }
@@ -73,6 +75,7 @@ public class ChatServer extends WebSocketServer {
         LOGGER.info("Connection closed: " + conn.getRemoteSocketAddress() + " (Code: " + code + ", Reason: " + reason + ")");
         clients.remove(conn);
         clientUsernames.remove(conn);
+        messageQueue.remove(conn);
     }
 
     @Override
@@ -80,6 +83,13 @@ public class ChatServer extends WebSocketServer {
         if (message.equalsIgnoreCase("ping")) {
             conn.send("pong");
             LOGGER.info("Received ping from " + conn.getRemoteSocketAddress() + ", sent pong");
+            return;
+        }
+
+        if (clientUsernames.get(conn) == null) {
+            // Queue the message if username is not registered
+            messageQueue.get(conn).add(message);
+            LOGGER.info("Queued message from unregistered connection " + conn.getRemoteSocketAddress() + ": " + message);
             return;
         }
 
@@ -92,7 +102,8 @@ public class ChatServer extends WebSocketServer {
             if (clientUsernames.get(conn) == null && incoming.getContent() != null && incoming.getContent().isEmpty()) {
                 clientUsernames.put(conn, rawUsername);
                 LOGGER.info("Registered username: " + rawUsername + " for connection " + conn.getRemoteSocketAddress());
-                return; // Skip further processing for registration message
+                processQueuedMessages(conn); // Process any queued messages after registration
+                return;
             }
 
             String coloredUsername = UserColorManager.getColoredUsername(rawUsername);
@@ -127,6 +138,13 @@ public class ChatServer extends WebSocketServer {
             LOGGER.info("Message from " + rawUsername + ": " + incoming.getContent() + (incoming.isWhisper() ? " (whisper to " + incoming.getTarget() + ")" : ""));
         } catch (Exception e) {
             LOGGER.warning("Failed to process message: " + message + " — " + e.getMessage());
+        }
+    }
+
+    private void processQueuedMessages(WebSocket conn) {
+        Queue<String> queue = messageQueue.get(conn);
+        while (!queue.isEmpty()) {
+            onMessage(conn, queue.poll()); // Process each queued message
         }
     }
 
