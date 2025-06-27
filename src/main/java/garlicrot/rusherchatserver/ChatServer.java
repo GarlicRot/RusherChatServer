@@ -58,13 +58,13 @@ public class ChatServer extends WebSocketServer {
     public void onOpen(WebSocket conn, ClientHandshake handshake) {
         LOGGER.info("New WebSocket connection: " + conn.getRemoteSocketAddress());
         clients.add(conn);
-        // Assume username is sent in a handshake parameter (e.g., "username=GARLICROT")
+        // Check for handshake parameter first
         String username = handshake.getFieldValue("username");
         if (username != null && !username.isEmpty()) {
             clientUsernames.put(conn, username);
             LOGGER.info("Registered username: " + username + " for connection " + conn.getRemoteSocketAddress());
         } else {
-            LOGGER.warning("No username provided for connection: " + conn.getRemoteSocketAddress());
+            LOGGER.info("No username provided in handshake, waiting for initial message from " + conn.getRemoteSocketAddress());
         }
     }
 
@@ -87,6 +87,14 @@ public class ChatServer extends WebSocketServer {
             Gson gson = new Gson();
             Message incoming = gson.fromJson(message, Message.class);
             String rawUsername = incoming.getUsername() != null ? incoming.getUsername() : "Unknown";
+
+            // Register username if not yet set and this is the initial message (empty content)
+            if (clientUsernames.get(conn) == null && incoming.getContent() != null && incoming.getContent().isEmpty()) {
+                clientUsernames.put(conn, rawUsername);
+                LOGGER.info("Registered username: " + rawUsername + " for connection " + conn.getRemoteSocketAddress());
+                return; // Skip further processing for registration message
+            }
+
             String coloredUsername = UserColorManager.getColoredUsername(rawUsername);
             Message colored = new Message(rawUsername, incoming.getContent(), coloredUsername, incoming.getTarget(), incoming.isWhisper());
 
@@ -96,13 +104,13 @@ public class ChatServer extends WebSocketServer {
                 boolean sentToTarget = false;
                 for (WebSocket client : clients) {
                     String clientUsername = clientUsernames.get(client);
-                    if (clientUsername != null && clientUsername.toLowerCase().equals(targetLower) && client.isOpen()) {
+                    if (clientUsername != null && clientUsername.toLowerCase().equals(targetLower) && client.isOpen() && client != conn) {
                         client.send(gson.toJson(colored));
                         sentToTarget = true;
                     }
                 }
                 // Send to sender for confirmation
-                if (sentToTarget || clientUsernames.get(conn) != null) {
+                if (sentToTarget) {
                     conn.send(gson.toJson(colored));
                 } else {
                     conn.send(gson.toJson(new Message("[System]", "User " + incoming.getTarget() + " not found.", "§e[System]§r")));
