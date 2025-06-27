@@ -8,9 +8,11 @@ RUN gradle clean build --no-daemon
 FROM eclipse-temurin:21-jdk
 WORKDIR /app
 
-# Copy built JAR and config into runtime image
+# Copy only the built JAR (assumes only one JAR in the build/libs dir)
 COPY --from=builder /home/gradle/project/build/libs/*.jar app.jar
-COPY user_colors.json user_colors.json
 
+# The port your app listens on
 EXPOSE 42424
+
+# Default command to run your application
 CMD ["java", "-jar", "app.jar"]
