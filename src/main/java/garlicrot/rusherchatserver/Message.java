@@ -10,7 +10,7 @@ public class Message {
     public Message(String username, String content) {
         this.username = username;
         this.content = content;
-        this.coloredUsername = username; // Default to plain username if color not set
+        this.coloredUsername = null; // let server logic handle it explicitly
     }
 
     public Message(String username, String content, String coloredUsername) {

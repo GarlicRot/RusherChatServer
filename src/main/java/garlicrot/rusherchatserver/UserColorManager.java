@@ -24,13 +24,17 @@ public class UserColorManager {
             Type type = new TypeToken<Map<String, String>>() {}.getType();
             Map<String, String> loaded = gson.fromJson(reader, type);
 
-            if (loaded != null) {
+            if (loaded != null && !loaded.isEmpty()) {
                 Map<String, String> temp = new HashMap<>();
                 for (Map.Entry<String, String> entry : loaded.entrySet()) {
-                    temp.put(entry.getKey().toUpperCase(), entry.getValue());
+                    String username = entry.getKey();
+                    String colorCode = entry.getValue();
+                    if (username != null && colorCode != null) {
+                        temp.put(username.toUpperCase(), colorCode);
+                    }
                 }
                 userColors = temp;
-                System.out.println("[RusherChatServer] Loaded user_colors.json with " + userColors.size() + " entries.");
+                System.out.println("[RusherChatServer] Loaded " + userColors.size() + " user color(s) from " + FILE_NAME);
             } else {
                 userColors = Collections.emptyMap();
                 System.err.println("[RusherChatServer] user_colors.json is empty or invalid.");
@@ -42,7 +46,7 @@ public class UserColorManager {
     }
 
     public static String getColoredUsername(String username) {
-        if (username == null) return "§7Unknown§r";
+        if (username == null || username.isBlank()) return "§7Unknown§r";
         String color = userColors.getOrDefault(username.toUpperCase(), "§7"); // Default gray
         return color + username + "§r";
     }

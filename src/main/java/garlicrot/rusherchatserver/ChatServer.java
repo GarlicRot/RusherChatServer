@@ -18,11 +18,8 @@ public class ChatServer extends WebSocketServer {
     private static final Logger LOGGER = Logger.getLogger(ChatServer.class.getName());
     private static final int PORT = 42424;
     private static final List<WebSocket> clients = new CopyOnWriteArrayList<>();
-    private static final List<String> messageHistory = new CopyOnWriteArrayList<>();
-    private static final int HISTORY_LIMIT = 50;
 
     static {
-        // Configure JUL programmatically
         Logger logger = Logger.getLogger("garlicrot.rusherchatserver");
         logger.setLevel(Level.FINE);
         logger.setUseParentHandlers(false);
@@ -58,11 +55,6 @@ public class ChatServer extends WebSocketServer {
     public void onOpen(WebSocket conn, ClientHandshake handshake) {
         LOGGER.info("New WebSocket connection: " + conn.getRemoteSocketAddress());
         clients.add(conn);
-
-        // Send history to new client
-        for (String msg : messageHistory) {
-            conn.send(msg);
-        }
     }
 
     @Override
@@ -79,10 +71,6 @@ public class ChatServer extends WebSocketServer {
             return;
         }
 
-        if (messageHistory.size() > HISTORY_LIMIT) {
-            messageHistory.removeFirst();
-        }
-
         try {
             Gson gson = new Gson();
             Message incoming = gson.fromJson(message, Message.class);
@@ -90,8 +78,6 @@ public class ChatServer extends WebSocketServer {
             String coloredUsername = UserColorManager.getColoredUsername(rawUsername);
             Message colored = new Message(rawUsername, incoming.getContent(), coloredUsername);
             String coloredJson = gson.toJson(colored);
-
-            addToHistory(coloredJson);
 
             for (WebSocket client : clients) {
                 if (client != conn && client.isOpen()) {
@@ -107,7 +93,7 @@ public class ChatServer extends WebSocketServer {
 
     @Override
     public void onError(WebSocket conn, Exception ex) {
-        LOGGER.log(Level.SEVERE, "WebSocket error" + (conn != null ? " from " + conn.getRemoteSocketAddress() : ""), ex); // Replaced printStackTrace
+        LOGGER.log(Level.SEVERE, "WebSocket error" + (conn != null ? " from " + conn.getRemoteSocketAddress() : ""), ex);
     }
 
     @Override
@@ -126,8 +112,8 @@ public class ChatServer extends WebSocketServer {
                         LOGGER.info("Connected clients: " + clients.size());
                     } else if (line.startsWith("/broadcast ")) {
                         String text = line.substring(11).trim();
-                        String json = new Gson().toJson(new Message("[System]", text));
-                        addToHistory(json);
+                        Message broadcastMsg = new Message("[System]", text, "§e[System]§r");
+                        String json = new Gson().toJson(broadcastMsg);
                         for (WebSocket client : clients) {
                             client.send(json);
                         }
@@ -137,18 +123,10 @@ public class ChatServer extends WebSocketServer {
                     }
                 }
             } catch (Exception e) {
-                LOGGER.log(Level.SEVERE, "Command listener error", e); // Replaced printStackTrace
+                LOGGER.log(Level.SEVERE, "Command listener error", e);
             }
         }, "CommandListener").start();
     }
-
-    private static void addToHistory(String msg) {
-        if (messageHistory.size() >= HISTORY_LIMIT) {
-            messageHistory.removeFirst();
-        }
-        messageHistory.add(msg);
-    }
-
 
     public static void shutdown() {
         LOGGER.info("Shutting down...");
