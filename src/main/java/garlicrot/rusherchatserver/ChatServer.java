@@ -19,7 +19,7 @@ public class ChatServer extends WebSocketServer {
     private static final Logger LOGGER = Logger.getLogger(ChatServer.class.getName());
     private static final int PORT = 42424;
     private static final List<WebSocket> clients = new CopyOnWriteArrayList<>();
-    private static final Map<WebSocket, String> clientUsernames = new ConcurrentHashMap<>(); // Map WebSocket to username
+    private static final Map<String, String> clientUsernames = new ConcurrentHashMap<>(); // Map IP:port to username
     private static final Map<WebSocket, Queue<String>> messageQueue = new ConcurrentHashMap<>(); // Queue for unprocessed messages
 
     static {
@@ -56,25 +56,22 @@ public class ChatServer extends WebSocketServer {
 
     @Override
     public void onOpen(WebSocket conn, ClientHandshake handshake) {
-        LOGGER.info("New WebSocket connection: " + conn.getRemoteSocketAddress());
+        String ipPort = conn.getRemoteSocketAddress().toString();
+        LOGGER.info("New WebSocket connection: " + ipPort);
         clients.add(conn);
         messageQueue.put(conn, new LinkedList<>()); // Initialize message queue for new connection
-        // Check for handshake parameter first
-        String username = handshake.getFieldValue("username");
-        if (username != null && !username.isEmpty()) {
-            clientUsernames.put(conn, username);
-            LOGGER.info("Registered username: " + username + " for connection " + conn.getRemoteSocketAddress());
-            processQueuedMessages(conn); // Process any queued messages
-        } else {
-            LOGGER.info("No username provided in handshake, waiting for initial message from " + conn.getRemoteSocketAddress());
-        }
+        // Use IP:port as default identifier
+        clientUsernames.put(ipPort, ipPort); // Default to IP:port if no username provided
+        LOGGER.info("Registered identifier: " + ipPort + " for connection");
+        processQueuedMessages(conn); // Process any queued messages immediately
     }
 
     @Override
     public void onClose(WebSocket conn, int code, String reason, boolean remote) {
-        LOGGER.info("Connection closed: " + conn.getRemoteSocketAddress() + " (Code: " + code + ", Reason: " + reason + ")");
+        String ipPort = conn.getRemoteSocketAddress().toString();
+        LOGGER.info("Connection closed: " + ipPort + " (Code: " + code + ", Reason: " + reason + ")");
         clients.remove(conn);
-        clientUsernames.remove(conn);
+        clientUsernames.remove(ipPort);
         messageQueue.remove(conn);
     }
 
@@ -86,35 +83,35 @@ public class ChatServer extends WebSocketServer {
             return;
         }
 
-        if (clientUsernames.get(conn) == null) {
-            // Queue the message if username is not registered
+        String ipPort = conn.getRemoteSocketAddress().toString();
+        if (!clientUsernames.containsKey(ipPort)) {
+            // This should not happen due to onOpen registration, but handle it
             messageQueue.get(conn).add(message);
-            LOGGER.info("Queued message from unregistered connection " + conn.getRemoteSocketAddress() + ": " + message);
+            LOGGER.warning("Unexpected unregistered connection: " + ipPort + ", queuing message: " + message);
             return;
         }
 
         try {
             Gson gson = new Gson();
             Message incoming = gson.fromJson(message, Message.class);
-            String rawUsername = incoming.getUsername() != null ? incoming.getUsername() : "Unknown";
+            String rawUsername = incoming.getUsername() != null ? incoming.getUsername() : clientUsernames.get(ipPort);
 
-            // Register username if not yet set and this is the initial message (empty content)
-            if (clientUsernames.get(conn) == null && incoming.getContent() != null && incoming.getContent().isEmpty()) {
-                clientUsernames.put(conn, rawUsername);
-                LOGGER.info("Registered username: " + rawUsername + " for connection " + conn.getRemoteSocketAddress());
-                processQueuedMessages(conn); // Process any queued messages after registration
-                return;
+            // Update username if provided in message
+            if (incoming.getUsername() != null) {
+                clientUsernames.put(ipPort, incoming.getUsername());
+                LOGGER.info("Updated username to: " + incoming.getUsername() + " for " + ipPort);
             }
 
             String coloredUsername = UserColorManager.getColoredUsername(rawUsername);
             Message colored = new Message(rawUsername, incoming.getContent(), coloredUsername, incoming.getTarget(), incoming.isWhisper());
 
             if (incoming.isWhisper() && incoming.getTarget() != null) {
-                // Find the target client
+                // Find the target client by IP:port or username
                 String targetLower = incoming.getTarget().toLowerCase();
                 boolean sentToTarget = false;
                 for (WebSocket client : clients) {
-                    String clientUsername = clientUsernames.get(client);
+                    String clientId = client.getRemoteSocketAddress().toString();
+                    String clientUsername = clientUsernames.get(clientId);
                     if (clientUsername != null && clientUsername.toLowerCase().equals(targetLower) && client.isOpen() && client != conn) {
                         client.send(gson.toJson(colored));
                         sentToTarget = true;
@@ -135,7 +132,7 @@ public class ChatServer extends WebSocketServer {
                 }
             }
 
-            LOGGER.info("Message from " + rawUsername + ": " + incoming.getContent() + (incoming.isWhisper() ? " (whisper to " + incoming.getTarget() + ")" : ""));
+            LOGGER.info("Message from " + rawUsername + " (" + ipPort + "): " + incoming.getContent() + (incoming.isWhisper() ? " (whisper to " + incoming.getTarget() + ")" : ""));
         } catch (Exception e) {
             LOGGER.warning("Failed to process message: " + message + " — " + e.getMessage());
         }
