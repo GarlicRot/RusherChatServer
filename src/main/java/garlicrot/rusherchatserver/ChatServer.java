@@ -79,15 +79,29 @@ public class ChatServer extends WebSocketServer {
             return;
         }
 
-        messageHistory.add(message);
         if (messageHistory.size() > HISTORY_LIMIT) {
             messageHistory.removeFirst();
         }
 
-        for (WebSocket client : clients) {
-            if (client != conn && client.isOpen()) {
-                client.send(message);
+        try {
+            Gson gson = new Gson();
+            Message incoming = gson.fromJson(message, Message.class);
+            String rawUsername = incoming.getUsername() != null ? incoming.getUsername() : "Unknown";
+            String coloredUsername = UserColorManager.getColoredUsername(rawUsername);
+            Message colored = new Message(rawUsername, incoming.getContent(), coloredUsername);
+            String coloredJson = gson.toJson(colored);
+
+            addToHistory(coloredJson);
+
+            for (WebSocket client : clients) {
+                if (client != conn && client.isOpen()) {
+                    client.send(coloredJson);
+                }
             }
+
+            LOGGER.fine("Message from " + rawUsername + ": " + incoming.getContent());
+        } catch (Exception e) {
+            LOGGER.warning("Failed to process message: " + message + " — " + e.getMessage());
         }
     }
 
@@ -129,11 +143,12 @@ public class ChatServer extends WebSocketServer {
     }
 
     private static void addToHistory(String msg) {
-        messageHistory.add(msg);
-        if (messageHistory.size() > HISTORY_LIMIT) {
+        if (messageHistory.size() >= HISTORY_LIMIT) {
             messageHistory.removeFirst();
         }
+        messageHistory.add(msg);
     }
+
 
     public static void shutdown() {
         LOGGER.info("Shutting down...");
