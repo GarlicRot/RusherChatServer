@@ -2,11 +2,13 @@ package garlicrot.rusherchatserver;
 
 import com.google.gson.Gson;
 import org.java_websocket.WebSocket;
-import org.java_websocket.server.WebSocketServer;
 import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.server.WebSocketServer;
 
 import java.net.InetSocketAddress;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Logger;
 import java.util.logging.Level;
@@ -18,14 +20,15 @@ public class ChatServer extends WebSocketServer {
     private static final Logger LOGGER = Logger.getLogger(ChatServer.class.getName());
     private static final int PORT = 42424;
     private static final List<WebSocket> clients = new CopyOnWriteArrayList<>();
+    private static final Map<WebSocket, String> clientUsernames = new ConcurrentHashMap<>(); // Map WebSocket to username
 
     static {
         Logger logger = Logger.getLogger("garlicrot.rusherchatserver");
-        logger.setLevel(Level.FINE);
+        logger.setLevel(Level.INFO);
         logger.setUseParentHandlers(false);
 
         ConsoleHandler handler = new ConsoleHandler();
-        handler.setLevel(Level.FINE);
+        handler.setLevel(Level.INFO);
         handler.setFormatter(new Formatter() {
             @Override
             public String format(LogRecord record) {
@@ -55,19 +58,28 @@ public class ChatServer extends WebSocketServer {
     public void onOpen(WebSocket conn, ClientHandshake handshake) {
         LOGGER.info("New WebSocket connection: " + conn.getRemoteSocketAddress());
         clients.add(conn);
+        // Assume username is sent in a handshake parameter (e.g., "username=GARLICROT")
+        String username = handshake.getFieldValue("username");
+        if (username != null && !username.isEmpty()) {
+            clientUsernames.put(conn, username);
+            LOGGER.info("Registered username: " + username + " for connection " + conn.getRemoteSocketAddress());
+        } else {
+            LOGGER.warning("No username provided for connection: " + conn.getRemoteSocketAddress());
+        }
     }
 
     @Override
     public void onClose(WebSocket conn, int code, String reason, boolean remote) {
         LOGGER.info("Connection closed: " + conn.getRemoteSocketAddress() + " (Code: " + code + ", Reason: " + reason + ")");
         clients.remove(conn);
+        clientUsernames.remove(conn);
     }
 
     @Override
     public void onMessage(WebSocket conn, String message) {
         if (message.equalsIgnoreCase("ping")) {
             conn.send("pong");
-            LOGGER.fine("Received ping from " + conn.getRemoteSocketAddress() + ", sent pong");
+            LOGGER.info("Received ping from " + conn.getRemoteSocketAddress() + ", sent pong");
             return;
         }
 
@@ -76,16 +88,35 @@ public class ChatServer extends WebSocketServer {
             Message incoming = gson.fromJson(message, Message.class);
             String rawUsername = incoming.getUsername() != null ? incoming.getUsername() : "Unknown";
             String coloredUsername = UserColorManager.getColoredUsername(rawUsername);
-            Message colored = new Message(rawUsername, incoming.getContent(), coloredUsername);
-            String coloredJson = gson.toJson(colored);
+            Message colored = new Message(rawUsername, incoming.getContent(), coloredUsername, incoming.getTarget(), incoming.isWhisper());
 
-            for (WebSocket client : clients) {
-                if (client != conn && client.isOpen()) {
-                    client.send(coloredJson);
+            if (incoming.isWhisper() && incoming.getTarget() != null) {
+                // Find the target client
+                String targetLower = incoming.getTarget().toLowerCase();
+                boolean sentToTarget = false;
+                for (WebSocket client : clients) {
+                    String clientUsername = clientUsernames.get(client);
+                    if (clientUsername != null && clientUsername.toLowerCase().equals(targetLower) && client.isOpen()) {
+                        client.send(gson.toJson(colored));
+                        sentToTarget = true;
+                    }
+                }
+                // Send to sender for confirmation
+                if (sentToTarget || clientUsernames.get(conn) != null) {
+                    conn.send(gson.toJson(colored));
+                } else {
+                    conn.send(gson.toJson(new Message("[System]", "User " + incoming.getTarget() + " not found.", "§e[System]§r")));
+                }
+            } else {
+                // Broadcast to all except sender
+                for (WebSocket client : clients) {
+                    if (client != conn && client.isOpen()) {
+                        client.send(gson.toJson(colored));
+                    }
                 }
             }
 
-            LOGGER.fine("Message from " + rawUsername + ": " + incoming.getContent());
+            LOGGER.info("Message from " + rawUsername + ": " + incoming.getContent() + (incoming.isWhisper() ? " (whisper to " + incoming.getTarget() + ")" : ""));
         } catch (Exception e) {
             LOGGER.warning("Failed to process message: " + message + " — " + e.getMessage());
         }
