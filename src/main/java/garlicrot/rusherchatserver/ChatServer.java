@@ -161,7 +161,7 @@ public class ChatServer extends WebSocketServer {
             String json = gson.toJson(colored);
 
             for (WebSocket client : clients) {
-                if (client != conn && client.isOpen()) {
+                if (client.isOpen()) {
                     client.send(json);
                 }
             }
