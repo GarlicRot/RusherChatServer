@@ -160,19 +160,11 @@ public class ChatServer extends WebSocketServer {
             Message colored = new Message(username, content, coloredUsername);
             String json = gson.toJson(colored);
 
-            Message selfMsg = new Message(username, content, "[You]");
-            String jsonSelf = gson.toJson(selfMsg);
-
             for (WebSocket client : clients) {
                 if (client.isOpen()) {
-                    if (client == conn) {
-                        client.send(jsonSelf);
-                    } else {
-                        client.send(json);
-                    }
+                    client.send(json); // Send same colored message to everyone
                 }
             }
-
 
             LOGGER.fine("Message from " + username + ": " + content);
         } catch (Exception e) {
