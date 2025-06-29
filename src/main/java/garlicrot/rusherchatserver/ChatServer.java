@@ -6,18 +6,19 @@ import org.java_websocket.server.WebSocketServer;
 import org.java_websocket.handshake.ClientHandshake;
 
 import java.net.InetSocketAddress;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.logging.Logger;
-import java.util.logging.Level;
-import java.util.logging.ConsoleHandler;
-import java.util.logging.Formatter;
-import java.util.logging.LogRecord;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.*;
 
 public class ChatServer extends WebSocketServer {
     private static final Logger LOGGER = Logger.getLogger(ChatServer.class.getName());
     private static final int PORT = 42424;
+    private static final int MAX_MESSAGE_LENGTH = 256;
+    private static final long MIN_INTERVAL_MS = 1000;
+
     private static final List<WebSocket> clients = new CopyOnWriteArrayList<>();
+    private final Map<WebSocket, Long> lastMessageTime = new ConcurrentHashMap<>();
 
     static {
         Logger logger = Logger.getLogger("garlicrot.rusherchatserver");
@@ -26,7 +27,8 @@ public class ChatServer extends WebSocketServer {
 
         ConsoleHandler handler = new ConsoleHandler();
         handler.setLevel(Level.FINE);
-        handler.setFormatter(new Formatter() {
+        handler.setFormatter(new java.util.logging.Formatter() {
+            @SuppressWarnings("unused")
             @Override
             public String format(LogRecord record) {
                 return String.format("%tF %<tT [%s] %s - %s%s%n",
@@ -43,11 +45,9 @@ public class ChatServer extends WebSocketServer {
 
     public static void main(String[] args) {
         LOGGER.info("Starting WebSocket server on port " + PORT + "...");
-
         ChatServer server = new ChatServer();
         server.start();
         LOGGER.info("WebSocket server is up and running");
-
         startCommandListener();
     }
 
@@ -61,6 +61,7 @@ public class ChatServer extends WebSocketServer {
     public void onClose(WebSocket conn, int code, String reason, boolean remote) {
         LOGGER.info("Connection closed: " + conn.getRemoteSocketAddress() + " (Code: " + code + ", Reason: " + reason + ")");
         clients.remove(conn);
+        lastMessageTime.remove(conn);
     }
 
     @Override
@@ -74,18 +75,37 @@ public class ChatServer extends WebSocketServer {
         try {
             Gson gson = new Gson();
             Message incoming = gson.fromJson(message, Message.class);
-            String rawUsername = incoming.getUsername() != null ? incoming.getUsername() : "Unknown";
-            String coloredUsername = UserColorManager.getColoredUsername(rawUsername);
-            Message colored = new Message(rawUsername, incoming.getContent(), coloredUsername);
-            String coloredJson = gson.toJson(colored);
+            String username = incoming.getUsername() != null ? incoming.getUsername() : "Unknown";
+
+            // Length check
+            if (incoming.getContent() != null && incoming.getContent().length() > MAX_MESSAGE_LENGTH) {
+                String truncated = incoming.getContent().substring(0, MAX_MESSAGE_LENGTH);
+                incoming = new Message(username, truncated, null);
+                conn.send(gson.toJson(new Message("[System]", "Your message was too long and was truncated.", "§e[System]§r")));
+                LOGGER.warning("Truncated long message from " + username);
+            }
+
+            // Rate limit
+            long now = System.currentTimeMillis();
+            Long last = lastMessageTime.get(conn);
+            if (last != null && now - last < MIN_INTERVAL_MS) {
+                conn.send(gson.toJson(new Message("[System]", "You are sending messages too quickly. Please slow down.", "§e[System]§r")));
+                LOGGER.warning("Rate limit exceeded by " + username);
+                return;
+            }
+            lastMessageTime.put(conn, now);
+
+            String coloredUsername = UserColorManager.getColoredUsername(username);
+            Message colored = new Message(username, incoming.getContent(), coloredUsername);
+            String json = gson.toJson(colored);
 
             for (WebSocket client : clients) {
                 if (client != conn && client.isOpen()) {
-                    client.send(coloredJson);
+                    client.send(json);
                 }
             }
 
-            LOGGER.fine("Message from " + rawUsername + ": " + incoming.getContent());
+            LOGGER.fine("Message from " + username + ": " + incoming.getContent());
         } catch (Exception e) {
             LOGGER.warning("Failed to process message: " + message + " — " + e.getMessage());
         }
