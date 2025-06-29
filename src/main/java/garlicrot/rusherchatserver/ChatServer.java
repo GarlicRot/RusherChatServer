@@ -6,9 +6,11 @@ import org.java_websocket.server.WebSocketServer;
 import org.java_websocket.handshake.ClientHandshake;
 
 import java.net.InetSocketAddress;
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Formatter;
 import java.util.logging.*;
 
 public class ChatServer extends WebSocketServer {
@@ -19,6 +21,9 @@ public class ChatServer extends WebSocketServer {
 
     private static final List<WebSocket> clients = new CopyOnWriteArrayList<>();
     private final Map<WebSocket, Long> lastMessageTime = new ConcurrentHashMap<>();
+    private final Map<WebSocket, String> usernames = new ConcurrentHashMap<>();
+    private final Map<String, WebSocket> userConnections = new ConcurrentHashMap<>();
+    private final Map<WebSocket, String> lastWhisperFrom = new ConcurrentHashMap<>();
 
     static {
         Logger logger = Logger.getLogger("garlicrot.rusherchatserver");
@@ -27,8 +32,7 @@ public class ChatServer extends WebSocketServer {
 
         ConsoleHandler handler = new ConsoleHandler();
         handler.setLevel(Level.FINE);
-        handler.setFormatter(new java.util.logging.Formatter() {
-            @SuppressWarnings("unused")
+        handler.setFormatter(new Formatter() {
             @Override
             public String format(LogRecord record) {
                 return String.format("%tF %<tT [%s] %s - %s%s%n",
@@ -62,6 +66,11 @@ public class ChatServer extends WebSocketServer {
         LOGGER.info("Connection closed: " + conn.getRemoteSocketAddress() + " (Code: " + code + ", Reason: " + reason + ")");
         clients.remove(conn);
         lastMessageTime.remove(conn);
+        if (usernames.containsKey(conn)) {
+            userConnections.remove(usernames.get(conn).toLowerCase());
+            usernames.remove(conn);
+        }
+        lastWhisperFrom.remove(conn);
     }
 
     @Override
@@ -76,6 +85,8 @@ public class ChatServer extends WebSocketServer {
             Gson gson = new Gson();
             Message incoming = gson.fromJson(message, Message.class);
             String username = incoming.getUsername() != null ? incoming.getUsername() : "Unknown";
+            usernames.put(conn, username);
+            userConnections.put(username.toLowerCase(), conn);
 
             // Length check
             if (incoming.getContent() != null && incoming.getContent().length() > MAX_MESSAGE_LENGTH) {
@@ -95,8 +106,58 @@ public class ChatServer extends WebSocketServer {
             }
             lastMessageTime.put(conn, now);
 
+            String content = incoming.getContent();
+            if (content != null) {
+                String lowerContent = content.toLowerCase();
+
+                if (lowerContent.startsWith("/w ") || lowerContent.startsWith("/whisper ")) {
+                    String[] parts = content.split(" ", 3);
+                    if (parts.length < 3) {
+                        conn.send(gson.toJson(new Message("[System]", "Usage: /w <username> <message>", "§e[System]§r")));
+                        return;
+                    }
+                    String target = parts[1];
+                    String whisper = parts[2];
+                    WebSocket targetConn = userConnections.get(target.toLowerCase());
+                    if (targetConn != null && targetConn.isOpen()) {
+                        Message toTarget = new Message("[Whisper] " + username, whisper, "§d[Whisper] " + username + "§r");
+                        Message toSender = new Message("[To " + target + "]", whisper, "§d[To " + target + "]§r");
+                        targetConn.send(gson.toJson(toTarget));
+                        conn.send(gson.toJson(toSender));
+                        lastWhisperFrom.put(targetConn, username);
+                        lastWhisperFrom.put(conn, target);
+                    } else {
+                        conn.send(gson.toJson(new Message("[System]", "User '" + target + "' not found or not online.", "§e[System]§r")));
+                    }
+                    return;
+                }
+
+                if (lowerContent.startsWith("/r ") || lowerContent.startsWith("/reply ")) {
+                    String[] parts = content.split(" ", 2);
+                    if (parts.length < 2) {
+                        conn.send(gson.toJson(new Message("[System]", "Usage: /r <message>", "§e[System]§r")));
+                        return;
+                    }
+                    String replyMsg = parts[1];
+                    String target = lastWhisperFrom.get(conn);
+                    if (target != null) {
+                        WebSocket targetConn = userConnections.get(target.toLowerCase());
+                        if (targetConn != null && targetConn.isOpen()) {
+                            Message toTarget = new Message("[Whisper] " + username, replyMsg, "§d[Whisper] " + username + "§r");
+                            Message toSender = new Message("[To " + target + "]", replyMsg, "§d[To " + target + "]§r");
+                            targetConn.send(gson.toJson(toTarget));
+                            conn.send(gson.toJson(toSender));
+                            lastWhisperFrom.put(targetConn, username);
+                            return;
+                        }
+                    }
+                    conn.send(gson.toJson(new Message("[System]", "No recent user to reply to.", "§e[System]§r")));
+                    return;
+                }
+            }
+
             String coloredUsername = UserColorManager.getColoredUsername(username);
-            Message colored = new Message(username, incoming.getContent(), coloredUsername);
+            Message colored = new Message(username, content, coloredUsername);
             String json = gson.toJson(colored);
 
             for (WebSocket client : clients) {
@@ -105,7 +166,7 @@ public class ChatServer extends WebSocketServer {
                 }
             }
 
-            LOGGER.fine("Message from " + username + ": " + incoming.getContent());
+            LOGGER.fine("Message from " + username + ": " + content);
         } catch (Exception e) {
             LOGGER.warning("Failed to process message: " + message + " — " + e.getMessage());
         }
