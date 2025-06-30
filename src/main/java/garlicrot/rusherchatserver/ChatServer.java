@@ -118,7 +118,11 @@ public class ChatServer extends WebSocketServer {
                     WebSocket targetConn = userConnections.get(target.toLowerCase());
                     if (targetConn != null && targetConn.isOpen()) {
                         Message toTarget = new Message("[Whisper] " + username, whisper, "§d[Whisper] " + username + "§r");
+                        Message toSender = new Message("[Whisper →] " + target, whisper, "§d[Whisper →] " + target + "§r");
+
                         targetConn.send(gson.toJson(toTarget));
+                        conn.send(gson.toJson(toSender));
+
                         lastWhisperFrom.put(targetConn, username);
                         lastWhisperFrom.put(conn, target);
                     } else {
@@ -139,7 +143,11 @@ public class ChatServer extends WebSocketServer {
                         WebSocket targetConn = userConnections.get(target.toLowerCase());
                         if (targetConn != null && targetConn.isOpen()) {
                             Message toTarget = new Message("[Whisper] " + username, replyMsg, "§d[Whisper] " + username + "§r");
+                            Message toSender = new Message("[Whisper →] " + target, replyMsg, "§d[Whisper →] " + target + "§r");
+
                             targetConn.send(gson.toJson(toTarget));
+                            conn.send(gson.toJson(toSender));
+
                             lastWhisperFrom.put(targetConn, username);
                             return;
                         }
@@ -147,6 +155,7 @@ public class ChatServer extends WebSocketServer {
                     conn.send(gson.toJson(new Message("[System]", "No recent user to reply to.", "§e[System]§r")));
                     return;
                 }
+
             }
 
             if (content == null || content.trim().isEmpty()) {
