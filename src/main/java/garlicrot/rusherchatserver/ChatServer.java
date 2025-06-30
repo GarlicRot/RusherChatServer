@@ -117,7 +117,7 @@ public class ChatServer extends WebSocketServer {
                     String whisper = parts[2];
                     WebSocket targetConn = userConnections.get(target.toLowerCase());
                     if (targetConn != null && targetConn.isOpen()) {
-                        Message toTarget = new Message("[Whisper] " + username, whisper, "§d[Whisper] " + username + "§r");
+                        Message toTarget = new Message(username, whisper, "§d[Whisper] " + username + "§r");
                         targetConn.send(gson.toJson(toTarget));
                         lastWhisperFrom.put(targetConn, username);
                         lastWhisperFrom.put(conn, target);
@@ -138,7 +138,7 @@ public class ChatServer extends WebSocketServer {
                     if (target != null) {
                         WebSocket targetConn = userConnections.get(target.toLowerCase());
                         if (targetConn != null && targetConn.isOpen()) {
-                            Message toTarget = new Message("[Whisper] " + username, replyMsg, "§d[Whisper] " + username + "§r");
+                            Message toTarget = new Message(username, replyMsg, "§d[Whisper] " + username + "§r");
                             targetConn.send(gson.toJson(toTarget));
                             lastWhisperFrom.put(targetConn, username);
                             return;
