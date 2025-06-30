@@ -10,7 +10,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.Formatter;
 import java.util.logging.*;
 
 public class ChatServer extends WebSocketServer {
@@ -88,7 +87,6 @@ public class ChatServer extends WebSocketServer {
             usernames.put(conn, username);
             userConnections.put(username.toLowerCase(), conn);
 
-            // Length check
             if (incoming.getContent() != null && incoming.getContent().length() > MAX_MESSAGE_LENGTH) {
                 String truncated = incoming.getContent().substring(0, MAX_MESSAGE_LENGTH);
                 incoming = new Message(username, truncated, null);
@@ -96,7 +94,6 @@ public class ChatServer extends WebSocketServer {
                 LOGGER.warning("Truncated long message from " + username);
             }
 
-            // Rate limit
             long now = System.currentTimeMillis();
             Long last = lastMessageTime.get(conn);
             if (last != null && now - last < MIN_INTERVAL_MS) {
@@ -121,9 +118,7 @@ public class ChatServer extends WebSocketServer {
                     WebSocket targetConn = userConnections.get(target.toLowerCase());
                     if (targetConn != null && targetConn.isOpen()) {
                         Message toTarget = new Message("[Whisper] " + username, whisper, "§d[Whisper] " + username + "§r");
-                        Message toSender = new Message("[To " + target + "]", whisper, "§d[To " + target + "]§r");
                         targetConn.send(gson.toJson(toTarget));
-                        conn.send(gson.toJson(toSender));
                         lastWhisperFrom.put(targetConn, username);
                         lastWhisperFrom.put(conn, target);
                     } else {
@@ -144,9 +139,7 @@ public class ChatServer extends WebSocketServer {
                         WebSocket targetConn = userConnections.get(target.toLowerCase());
                         if (targetConn != null && targetConn.isOpen()) {
                             Message toTarget = new Message("[Whisper] " + username, replyMsg, "§d[Whisper] " + username + "§r");
-                            Message toSender = new Message("[To " + target + "]", replyMsg, "§d[To " + target + "]§r");
                             targetConn.send(gson.toJson(toTarget));
-                            conn.send(gson.toJson(toSender));
                             lastWhisperFrom.put(targetConn, username);
                             return;
                         }
@@ -162,7 +155,7 @@ public class ChatServer extends WebSocketServer {
 
             for (WebSocket client : clients) {
                 if (client.isOpen()) {
-                    client.send(json); // Send same colored message to everyone
+                    client.send(json);
                 }
             }
 
