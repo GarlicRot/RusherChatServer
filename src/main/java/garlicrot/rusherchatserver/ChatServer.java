@@ -104,64 +104,62 @@ public class ChatServer extends WebSocketServer {
             lastMessageTime.put(conn, now);
 
             String content = incoming.getContent();
-            if (content != null) {
-                String lowerContent = content.toLowerCase();
+            if (content == null || content.trim().isEmpty()) {
+                LOGGER.warning("Skipping empty or null message from " + username);
+                return;
+            }
 
-                if (lowerContent.startsWith("/w ") || lowerContent.startsWith("/whisper ")) {
-                    String[] parts = content.split(" ", 3);
-                    if (parts.length < 3) {
-                        conn.send(gson.toJson(new Message("[System]", "Usage: /w <username> <message>", "§e[System]§r")));
-                        return;
-                    }
-                    String target = parts[1];
-                    String whisper = parts[2];
+            String lowerContent = content.toLowerCase();
+
+            if (lowerContent.startsWith("/w ") || lowerContent.startsWith("/whisper ")) {
+                String[] parts = content.split(" ", 3);
+                if (parts.length < 3) {
+                    conn.send(gson.toJson(new Message("[System]", "Usage: /w <username> <message>", "§e[System]§r")));
+                    return;
+                }
+                String target = parts[1];
+                String whisper = parts[2];
+                WebSocket targetConn = userConnections.get(target.toLowerCase());
+                if (targetConn != null && targetConn.isOpen()) {
+                    Message toTarget = new Message("[Whisper] " + username, whisper, "§d[Whisper] " + username + "§r");
+                    Message toSender = new Message("[Whisper →] " + target, whisper, "§d[Whisper →] " + target + "§r");
+
+                    targetConn.send(gson.toJson(toTarget));
+                    conn.send(gson.toJson(toSender));
+
+                    lastWhisperFrom.put(targetConn, username);
+                    lastWhisperFrom.put(conn, target);
+                } else {
+                    conn.send(gson.toJson(new Message("[System]", "User '" + target + "' not found or not online.", "§e[System]§r")));
+                }
+                return;
+            }
+
+            if (lowerContent.startsWith("/r ") || lowerContent.startsWith("/reply ")) {
+                String[] parts = content.split(" ", 2);
+                if (parts.length < 2) {
+                    conn.send(gson.toJson(new Message("[System]", "Usage: /r <message>", "§e[System]§r")));
+                    return;
+                }
+                String replyMsg = parts[1];
+                String target = lastWhisperFrom.get(conn);
+                if (target != null) {
                     WebSocket targetConn = userConnections.get(target.toLowerCase());
                     if (targetConn != null && targetConn.isOpen()) {
-                        Message toTarget = new Message("[Whisper] " + username, whisper, "§d[Whisper] " + username + "§r");
-                        Message toSender = new Message("[Whisper →] " + target, whisper, "§d[Whisper →] " + target + "§r");
+                        Message toTarget = new Message("[Whisper] " + username, replyMsg, "§d[Whisper] " + username + "§r");
+                        Message toSender = new Message("[Whisper →] " + target, replyMsg, "§d[Whisper →] " + target + "§r");
 
                         targetConn.send(gson.toJson(toTarget));
                         conn.send(gson.toJson(toSender));
 
                         lastWhisperFrom.put(targetConn, username);
-                        lastWhisperFrom.put(conn, target);
-                    } else {
-                        conn.send(gson.toJson(new Message("[System]", "User '" + target + "' not found or not online.", "§e[System]§r")));
-                    }
-                    return;
-                }
-
-                if (lowerContent.startsWith("/r ") || lowerContent.startsWith("/reply ")) {
-                    String[] parts = content.split(" ", 2);
-                    if (parts.length < 2) {
-                        conn.send(gson.toJson(new Message("[System]", "Usage: /r <message>", "§e[System]§r")));
                         return;
                     }
-                    String replyMsg = parts[1];
-                    String target = lastWhisperFrom.get(conn);
-                    if (target != null) {
-                        WebSocket targetConn = userConnections.get(target.toLowerCase());
-                        if (targetConn != null && targetConn.isOpen()) {
-                            Message toTarget = new Message("[Whisper] " + username, replyMsg, "§d[Whisper] " + username + "§r");
-                            Message toSender = new Message("[Whisper →] " + target, replyMsg, "§d[Whisper →] " + target + "§r");
-
-                            targetConn.send(gson.toJson(toTarget));
-                            conn.send(gson.toJson(toSender));
-
-                            lastWhisperFrom.put(targetConn, username);
-                            return;
-                        }
-                    }
-                    conn.send(gson.toJson(new Message("[System]", "No recent user to reply to.", "§e[System]§r")));
-                    return;
                 }
-
-            }
-
-            if (content == null || content.trim().isEmpty()) {
-                LOGGER.warning("Skipping empty or null message from " + username);
+                conn.send(gson.toJson(new Message("[System]", "No recent user to reply to.", "§e[System]§r")));
                 return;
             }
+
             String coloredUsername = UserColorManager.getColoredUsername(username);
             Message colored = new Message(username, content, coloredUsername);
             String json = gson.toJson(colored);
