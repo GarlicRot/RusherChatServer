@@ -117,12 +117,8 @@ public class ChatServer extends WebSocketServer {
                     String whisper = parts[2];
                     WebSocket targetConn = userConnections.get(target.toLowerCase());
                     if (targetConn != null && targetConn.isOpen()) {
-                        Message toTarget = new Message(username, whisper, "§d[Whisper] " + username + "§r");
+                        Message toTarget = new Message("[Whisper] " + username, whisper, "§d[Whisper] " + username + "§r");
                         targetConn.send(gson.toJson(toTarget));
-
-                        Message echo = new Message(target, whisper, "§d[To " + target + "]§r");
-                        conn.send(gson.toJson(echo));
-
                         lastWhisperFrom.put(targetConn, username);
                         lastWhisperFrom.put(conn, target);
                     } else {
@@ -130,7 +126,6 @@ public class ChatServer extends WebSocketServer {
                     }
                     return;
                 }
-
 
                 if (lowerContent.startsWith("/r ") || lowerContent.startsWith("/reply ")) {
                     String[] parts = content.split(" ", 2);
@@ -143,12 +138,8 @@ public class ChatServer extends WebSocketServer {
                     if (target != null) {
                         WebSocket targetConn = userConnections.get(target.toLowerCase());
                         if (targetConn != null && targetConn.isOpen()) {
-                            Message toTarget = new Message(username, replyMsg, "§d[Whisper] " + username + "§r");
+                            Message toTarget = new Message("[Whisper] " + username, replyMsg, "§d[Whisper] " + username + "§r");
                             targetConn.send(gson.toJson(toTarget));
-
-                            Message echo = new Message(target, replyMsg, "§d[To " + target + "]§r");
-                            conn.send(gson.toJson(echo));
-
                             lastWhisperFrom.put(targetConn, username);
                             return;
                         }
@@ -156,9 +147,12 @@ public class ChatServer extends WebSocketServer {
                     conn.send(gson.toJson(new Message("[System]", "No recent user to reply to.", "§e[System]§r")));
                     return;
                 }
-
             }
 
+            if (content == null || content.trim().isEmpty()) {
+                LOGGER.warning("Skipping empty or null message from " + username);
+                return;
+            }
             String coloredUsername = UserColorManager.getColoredUsername(username);
             Message colored = new Message(username, content, coloredUsername);
             String json = gson.toJson(colored);
