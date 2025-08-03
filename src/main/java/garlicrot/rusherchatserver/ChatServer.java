@@ -25,12 +25,12 @@ public class ChatServer extends WebSocketServer {
     private final Map<WebSocket, String> lastWhisperFrom = new ConcurrentHashMap<>();
 
     static {
-        Logger logger = Logger.getLogger("garlicrot.rusherchatserver");
-        logger.setLevel(Level.FINE);
-        logger.setUseParentHandlers(false);
+        Logger rootLogger = Logger.getLogger("garlicrot.rusherchatserver");
+        rootLogger.setLevel(Level.INFO);
+        rootLogger.setUseParentHandlers(false);
 
         ConsoleHandler handler = new ConsoleHandler();
-        handler.setLevel(Level.FINE);
+        handler.setLevel(Level.INFO);
         handler.setFormatter(new Formatter() {
             @Override
             public String format(LogRecord record) {
@@ -39,7 +39,7 @@ public class ChatServer extends WebSocketServer {
                         record.getMessage(), record.getThrown() != null ? " " + record.getThrown() : "");
             }
         });
-        logger.addHandler(handler);
+        rootLogger.addHandler(handler);
     }
 
     public ChatServer() {
@@ -57,12 +57,14 @@ public class ChatServer extends WebSocketServer {
     @Override
     public void onOpen(WebSocket conn, ClientHandshake handshake) {
         LOGGER.info("New WebSocket connection: " + conn.getRemoteSocketAddress());
+        DiscordLogger.send("🟢 **User connected:** `" + conn.getRemoteSocketAddress() + "`");
         clients.add(conn);
     }
 
     @Override
     public void onClose(WebSocket conn, int code, String reason, boolean remote) {
         LOGGER.info("Connection closed: " + conn.getRemoteSocketAddress() + " (Code: " + code + ", Reason: " + reason + ")");
+        DiscordLogger.send("🔴 **Disconnected:** `" + conn.getRemoteSocketAddress() + "` (Reason: " + reason + ")");
         clients.remove(conn);
         lastMessageTime.remove(conn);
         if (usernames.containsKey(conn)) {
@@ -76,7 +78,6 @@ public class ChatServer extends WebSocketServer {
     public void onMessage(WebSocket conn, String message) {
         if (message.equalsIgnoreCase("ping")) {
             conn.send("pong");
-            LOGGER.fine("Received ping from " + conn.getRemoteSocketAddress() + ", sent pong");
             return;
         }
 
@@ -92,6 +93,7 @@ public class ChatServer extends WebSocketServer {
                 incoming = new Message(username, truncated, null);
                 conn.send(gson.toJson(new Message("[System]", "Your message was too long and was truncated.", "§e[System]§r")));
                 LOGGER.warning("Truncated long message from " + username);
+                DiscordLogger.send("✂️ **Truncated message from " + username + "**");
             }
 
             long now = System.currentTimeMillis();
@@ -99,6 +101,7 @@ public class ChatServer extends WebSocketServer {
             if (last != null && now - last < MIN_INTERVAL_MS) {
                 conn.send(gson.toJson(new Message("[System]", "You are sending messages too quickly. Please slow down.", "§e[System]§r")));
                 LOGGER.warning("Rate limit exceeded by " + username);
+                DiscordLogger.send("⏱️ **Rate limited:** " + username);
                 return;
             }
             lastMessageTime.put(conn, now);
@@ -129,6 +132,8 @@ public class ChatServer extends WebSocketServer {
 
                     lastWhisperFrom.put(targetConn, username);
                     lastWhisperFrom.put(conn, target);
+
+                    DiscordLogger.send("🔐 **" + username + " whispered to " + target + "**: " + whisper);
                 } else {
                     conn.send(gson.toJson(new Message("[System]", "User '" + target + "' not found or not online.", "§e[System]§r")));
                 }
@@ -153,6 +158,7 @@ public class ChatServer extends WebSocketServer {
                         conn.send(gson.toJson(toSender));
 
                         lastWhisperFrom.put(targetConn, username);
+                        DiscordLogger.send("🔁 **" + username + " replied to " + target + "**: " + replyMsg);
                         return;
                     }
                 }
@@ -170,20 +176,24 @@ public class ChatServer extends WebSocketServer {
                 }
             }
 
-            LOGGER.fine("Message from " + username + ": " + content);
+            LOGGER.info("Message from " + username + ": " + content);
+            DiscordLogger.send("💬 **" + username + "**: " + content);
         } catch (Exception e) {
             LOGGER.warning("Failed to process message: " + message + " — " + e.getMessage());
+            DiscordLogger.send("❌ **Failed to process message**: `" + message + "`\n```" + e.getMessage() + "```");
         }
     }
 
     @Override
     public void onError(WebSocket conn, Exception ex) {
         LOGGER.log(Level.SEVERE, "WebSocket error" + (conn != null ? " from " + conn.getRemoteSocketAddress() : ""), ex);
+        DiscordLogger.send("⚠️ **Error**: " + ex.getMessage());
     }
 
     @Override
     public void onStart() {
         LOGGER.info("Server started successfully on port " + PORT);
+        DiscordLogger.send("🚀 **Server started on port " + PORT + "**");
     }
 
     private static void startCommandListener() {
@@ -192,9 +202,11 @@ public class ChatServer extends WebSocketServer {
                 String line;
                 while ((line = console.readLine()) != null) {
                     if (line.equalsIgnoreCase("/shutdown")) {
+                        DiscordLogger.send("🔻 **Server is shutting down.**");
                         shutdown();
                     } else if (line.equalsIgnoreCase("/users")) {
                         LOGGER.info("Connected clients: " + clients.size());
+                        DiscordLogger.send("👥 **Connected clients:** " + clients.size());
                     } else if (line.startsWith("/broadcast ")) {
                         String text = line.substring(11).trim();
                         Message broadcastMsg = new Message("[System]", text, "§e[System]§r");
@@ -203,12 +215,14 @@ public class ChatServer extends WebSocketServer {
                             client.send(json);
                         }
                         LOGGER.info("Broadcast sent: " + text);
+                        DiscordLogger.send("📢 **Broadcast:** " + text);
                     } else {
                         LOGGER.warning("Unknown command: " + line);
                     }
                 }
             } catch (Exception e) {
                 LOGGER.log(Level.SEVERE, "Command listener error", e);
+                DiscordLogger.send("❌ **Command listener error:** " + e.getMessage());
             }
         }, "CommandListener").start();
     }
