@@ -1,13 +1,16 @@
-name: Build and Release RusherChatServer
+name: Build and Attach JAR to Release
 
 on:
-  # Runs automatically whenever you push a tag like v1.0.0
-  push:
-    tags:
-      - "v*.*.*"
+  # Trigger when you publish a release from the GitHub UI
+  release:
+    types: [published]
 
-  # Optional: let you run the build manually from the Actions tab
+  # Optional: allow manual runs from the Actions tab
   workflow_dispatch: {}
+
+# Needed so the workflow can upload assets to the release
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -29,19 +32,19 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew clean build -x test
 
+      # Optional: keep artifacts for debugging / download from Actions
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rusherchatserver-jars
           path: build/libs/*.jar
 
-      # Only create a GitHub Release when this run was triggered by a tag
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Upload JAR to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: "RusherChatServer ${{ github.ref_name }}"
+          # Use the tag of the release that triggered this workflow
+          tag_name: ${{ github.event.release.tag_name }}
           files: build/libs/*.jar
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
