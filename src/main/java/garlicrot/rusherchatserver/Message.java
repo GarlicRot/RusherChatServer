@@ -7,22 +7,15 @@ public class Message {
     private String target;
     private boolean whisper;
 
+    // Required no-arg constructor for Gson
     public Message() {}
 
     public Message(String username, String content) {
-        this.username = username;
-        this.content = content;
-        this.coloredUsername = null;
-        this.target = null;
-        this.whisper = false;
+        this(username, content, null, null, false);
     }
 
     public Message(String username, String content, String coloredUsername) {
-        this.username = username;
-        this.content = content;
-        this.coloredUsername = coloredUsername;
-        this.target = null;
-        this.whisper = false;
+        this(username, content, coloredUsername, null, false);
     }
 
     public Message(String username, String content, String coloredUsername, String target, boolean whisper) {
