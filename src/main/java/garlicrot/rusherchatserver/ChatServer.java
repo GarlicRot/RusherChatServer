@@ -190,7 +190,7 @@ public class ChatServer extends WebSocketServer {
             Message colored = new Message(username, trimmed, coloredUsername);
             String json = gson.toJson(colored);
 
-            broadcast(json);
+            broadcastToAll(json);
             LOGGER.info("Message from " + username + ": " + trimmed);
         } catch (Exception e) {
             LOGGER.log(Level.WARNING, "Failed to process message: " + message + " — " + e.getMessage(), e);
@@ -233,7 +233,7 @@ public class ChatServer extends WebSocketServer {
                         if (!text.isEmpty()) {
                             Message broadcastMsg = new Message("[System]", text, "§e[System]§r");
                             String json = new Gson().toJson(broadcastMsg);
-                            broadcast(json);
+                            broadcastToAll(json);
                             LOGGER.info("Broadcast sent: " + text);
                         } else {
                             LOGGER.warning("Broadcast command used with empty message.");
@@ -250,7 +250,7 @@ public class ChatServer extends WebSocketServer {
 
     // --- Helper methods ---
 
-    private static void broadcast(String json) {
+    private static void broadcastToAll(String json) {
         for (WebSocket client : clients) {
             if (client.isOpen()) {
                 client.send(json);
