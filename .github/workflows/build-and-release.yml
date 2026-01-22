@@ -1,9 +1,12 @@
 name: Build and Release RusherChatServer
 
 on:
+  # Runs automatically whenever you push a tag like v1.0.0
   push:
     tags:
       - "v*.*.*"
+
+  # Optional: let you run the build manually from the Actions tab
   workflow_dispatch: {}
 
 jobs:
@@ -32,9 +35,13 @@ jobs:
           name: rusherchatserver-jars
           path: build/libs/*.jar
 
+      # Only create a GitHub Release when this run was triggered by a tag
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: "RusherChatServer ${{ github.ref_name }}"
           files: build/libs/*.jar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
