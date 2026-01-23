@@ -17,13 +17,8 @@ public class ChatServer extends WebSocketServer {
     // --- Configuration ---
     private static final Logger LOGGER = Logger.getLogger(ChatServer.class.getName());
 
-    // Default port; can be overridden via CLI args if you want to extend main()
     private static final int DEFAULT_PORT = 42424;
-
-    // Max length for any message coming from clients
     private static final int MAX_MESSAGE_LENGTH = 256;
-
-    // Minimum interval between messages per connection (basic rate limiting)
     private static final long MIN_INTERVAL_MS = 1000;
 
     // --- Shared state ---
@@ -63,17 +58,10 @@ public class ChatServer extends WebSocketServer {
 
     // --- Constructors ---
 
-    /**
-     * Uses the default port (42424).
-     */
     public ChatServer() {
         this(DEFAULT_PORT);
     }
 
-    /**
-     * Allows creating a server on a custom port.
-     * Still binds to 0.0.0.0 so all interfaces are reachable.
-     */
     public ChatServer(int port) {
         super(new InetSocketAddress("0.0.0.0", port));
         this.port = port;
@@ -84,7 +72,6 @@ public class ChatServer extends WebSocketServer {
     public static void main(String[] args) {
         int port = DEFAULT_PORT;
 
-        // If you ever want to support: java -jar server.jar 12345
         if (args.length > 0) {
             try {
                 port = Integer.parseInt(args[0]);
@@ -128,7 +115,7 @@ public class ChatServer extends WebSocketServer {
 
     @Override
     public void onMessage(WebSocket conn, String message) {
-        // Basic ping/pong health check
+        // ping/pong health check
         if ("ping".equalsIgnoreCase(message)) {
             conn.send("pong");
             return;
@@ -142,14 +129,47 @@ public class ChatServer extends WebSocketServer {
                 return;
             }
 
-            String username = incoming.getUsername() != null ? incoming.getUsername() : "Unknown";
-            usernames.put(conn, username);
-            userConnections.put(username.toLowerCase(), conn);
+            Message.Type type = incoming.getType();
+
+            // --- LOGIN handshake ---
+            if (type == Message.Type.LOGIN) {
+                String requestedName = incoming.getUsername();
+
+                if (requestedName == null || requestedName.isBlank()) {
+                    sendSystemMessage(conn, "Username cannot be empty.");
+                    conn.close(1008, "Invalid username");
+                    return;
+                }
+
+                String key = requestedName.toLowerCase();
+                if (userConnections.containsKey(key)) {
+                    sendSystemMessage(conn, "Username '" + requestedName + "' is already in use.");
+                    conn.close(1008, "Name in use");
+                    return;
+                }
+
+                usernames.put(conn, requestedName);
+                userConnections.put(key, conn);
+                LOGGER.info("User logged in: " + requestedName + " from " + conn.getRemoteSocketAddress());
+                return;
+            }
+
+            // From here on, only allow messages from logged-in connections.
+            String username = usernames.get(conn);
+            if (username == null) {
+                sendSystemMessage(conn, "You must log in before sending messages.");
+                return;
+            }
+
+            String content = incoming.getContent();
+            if (content == null || content.trim().isEmpty()) {
+                LOGGER.fine("Skipping empty or null message from " + username);
+                return;
+            }
 
             // Enforce message length
-            if (incoming.getContent() != null && incoming.getContent().length() > MAX_MESSAGE_LENGTH) {
-                String truncated = incoming.getContent().substring(0, MAX_MESSAGE_LENGTH);
-                incoming = new Message(username, truncated, null);
+            if (content.length() > MAX_MESSAGE_LENGTH) {
+                content = content.substring(0, MAX_MESSAGE_LENGTH);
                 sendSystemMessage(conn, "Your message was too long and was truncated.");
                 LOGGER.warning("Truncated long message from " + username);
             }
@@ -164,22 +184,16 @@ public class ChatServer extends WebSocketServer {
             }
             lastMessageTime.put(conn, now);
 
-            String content = incoming.getContent();
-            if (content == null || content.trim().isEmpty()) {
-                LOGGER.fine("Skipping empty or null message from " + username);
-                return;
-            }
-
             String trimmed = content.trim();
             String lowerContent = trimmed.toLowerCase();
 
-            // --- Whisper command: /w <username> <message> or /whisper ...
+            // --- Whisper commands ---
             if (lowerContent.startsWith("/w ") || lowerContent.startsWith("/whisper ")) {
                 handleWhisper(conn, username, trimmed);
                 return;
             }
 
-            // --- Reply command: /r <message> or /reply ...
+            // --- Reply commands ---
             if (lowerContent.startsWith("/r ") || lowerContent.startsWith("/reply ")) {
                 handleReply(conn, username, trimmed);
                 return;
@@ -187,7 +201,14 @@ public class ChatServer extends WebSocketServer {
 
             // --- Normal chat message ---
             String coloredUsername = UserColorManager.getColoredUsername(username);
-            Message colored = new Message(username, trimmed, coloredUsername);
+            Message colored = new Message(
+                    Message.Type.CHAT,
+                    username,
+                    trimmed,
+                    coloredUsername,
+                    null,
+                    false
+            );
             String json = gson.toJson(colored);
 
             broadcastToAll(json);
@@ -207,7 +228,6 @@ public class ChatServer extends WebSocketServer {
     @Override
     public void onStart() {
         LOGGER.info("Server started successfully on port " + port);
-        // Required by some WebSocketServer impls
         setConnectionLostTimeout(60);
     }
 
@@ -231,7 +251,14 @@ public class ChatServer extends WebSocketServer {
                     } else if (line.startsWith("/broadcast ")) {
                         String text = line.substring("/broadcast ".length()).trim();
                         if (!text.isEmpty()) {
-                            Message broadcastMsg = new Message("[System]", text, "§e[System]§r");
+                            Message broadcastMsg = new Message(
+                                    Message.Type.SYSTEM,
+                                    "[System]",
+                                    text,
+                                    "§e[System]§r",
+                                    null,
+                                    false
+                            );
                             String json = new Gson().toJson(broadcastMsg);
                             broadcastToAll(json);
                             LOGGER.info("Broadcast sent: " + text);
@@ -259,13 +286,18 @@ public class ChatServer extends WebSocketServer {
     }
 
     private void sendSystemMessage(WebSocket conn, String text) {
-        Message sys = new Message("[System]", text, "§e[System]§r");
+        Message sys = new Message(
+                Message.Type.SYSTEM,
+                "[System]",
+                text,
+                "§e[System]§r",
+                null,
+                false
+        );
         conn.send(gson.toJson(sys));
     }
 
     private void handleWhisper(WebSocket senderConn, String senderName, String content) {
-        // /w <username> <message>
-        // /whisper <username> <message>
         String[] parts = content.split(" ", 3);
         if (parts.length < 3) {
             sendSystemMessage(senderConn, "Usage: /w <username> <message>");
@@ -277,10 +309,22 @@ public class ChatServer extends WebSocketServer {
 
         WebSocket targetConn = userConnections.get(targetName.toLowerCase());
         if (targetConn != null && targetConn.isOpen()) {
-            Message toTarget = new Message("[Whisper] " + senderName, whisperText,
-                    "§d[Whisper] " + senderName + "§r");
-            Message toSender = new Message("[Whisper ->] " + targetName, whisperText,
-                    "§5[Whisper ->] " + targetName + "§r");
+            Message toTarget = new Message(
+                    Message.Type.WHISPER,
+                    "[Whisper] " + senderName,
+                    whisperText,
+                    "§d[Whisper] " + senderName + "§r",
+                    null,
+                    true
+            );
+            Message toSender = new Message(
+                    Message.Type.WHISPER,
+                    "[Whisper ->] " + targetName,
+                    whisperText,
+                    "§5[Whisper ->] " + targetName + "§r",
+                    null,
+                    true
+            );
 
             targetConn.send(gson.toJson(toTarget));
             senderConn.send(gson.toJson(toSender));
@@ -295,8 +339,6 @@ public class ChatServer extends WebSocketServer {
     }
 
     private void handleReply(WebSocket senderConn, String senderName, String content) {
-        // /r <message>
-        // /reply <message>
         String[] parts = content.split(" ", 2);
         if (parts.length < 2) {
             sendSystemMessage(senderConn, "Usage: /r <message>");
@@ -313,10 +355,22 @@ public class ChatServer extends WebSocketServer {
 
         WebSocket targetConn = userConnections.get(targetName.toLowerCase());
         if (targetConn != null && targetConn.isOpen()) {
-            Message toTarget = new Message("[Whisper] " + senderName, replyMsg,
-                    "§d[Whisper] " + senderName + "§r");
-            Message toSender = new Message("[Whisper ->] " + targetName, replyMsg,
-                    "§5[Whisper ->] " + targetName + "§r");
+            Message toTarget = new Message(
+                    Message.Type.WHISPER,
+                    "[Whisper] " + senderName,
+                    replyMsg,
+                    "§d[Whisper] " + senderName + "§r",
+                    null,
+                    true
+            );
+            Message toSender = new Message(
+                    Message.Type.WHISPER,
+                    "[Whisper ->] " + targetName,
+                    replyMsg,
+                    "§5[Whisper ->] " + targetName + "§r",
+                    null,
+                    true
+            );
 
             targetConn.send(gson.toJson(toTarget));
             senderConn.send(gson.toJson(toSender));
