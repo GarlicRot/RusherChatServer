@@ -5,7 +5,14 @@ import org.java_websocket.WebSocket;
 import org.java_websocket.server.WebSocketServer;
 import org.java_websocket.handshake.ClientHandshake;
 
+import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -20,6 +27,11 @@ public class ChatServer extends WebSocketServer {
     private static final int DEFAULT_PORT = 42424;
     private static final int MAX_MESSAGE_LENGTH = 256;
     private static final long MIN_INTERVAL_MS = 1000;
+
+    // Must match client secret!
+    private static final String WHISPER_SECRET = "rusherchat-whisper-key-01";
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+    private static SecretKeySpec WHISPER_KEY;
 
     // --- Shared state ---
     private static final List<WebSocket> clients = new CopyOnWriteArrayList<>();
@@ -54,6 +66,32 @@ public class ChatServer extends WebSocketServer {
             }
         });
         rootLogger.addHandler(handler);
+    }
+
+    // --- Encryption helpers ---
+
+    private static SecretKeySpec getWhisperKey() throws Exception {
+        if (WHISPER_KEY == null) {
+            MessageDigest sha = MessageDigest.getInstance("SHA-256");
+            byte[] key = sha.digest(WHISPER_SECRET.getBytes(StandardCharsets.UTF_8));
+            WHISPER_KEY = new SecretKeySpec(key, "AES");
+        }
+        return WHISPER_KEY;
+    }
+
+    private static String encryptWhisper(String plainText) throws Exception {
+        byte[] iv = new byte[12];
+        SECURE_RANDOM.nextBytes(iv);
+
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.ENCRYPT_MODE, getWhisperKey(), new GCMParameterSpec(128, iv));
+        byte[] cipherBytes = cipher.doFinal(plainText.getBytes(StandardCharsets.UTF_8));
+
+        byte[] combined = new byte[iv.length + cipherBytes.length];
+        System.arraycopy(iv, 0, combined, 0, iv.length);
+        System.arraycopy(cipherBytes, 0, combined, iv.length, cipherBytes.length);
+
+        return Base64.getEncoder().encodeToString(combined);
     }
 
     // --- Constructors ---
@@ -309,10 +347,19 @@ public class ChatServer extends WebSocketServer {
 
         WebSocket targetConn = userConnections.get(targetName.toLowerCase());
         if (targetConn != null && targetConn.isOpen()) {
+            String encrypted;
+            try {
+                encrypted = encryptWhisper(whisperText);
+            } catch (Exception e) {
+                LOGGER.log(Level.SEVERE, "Failed to encrypt whisper", e);
+                sendSystemMessage(senderConn, "Failed to send whisper (encryption error).");
+                return;
+            }
+
             Message toTarget = new Message(
                     Message.Type.WHISPER,
                     "[Whisper] " + senderName,
-                    whisperText,
+                    encrypted,
                     "§d[Whisper] " + senderName + "§r",
                     null,
                     true
@@ -320,7 +367,7 @@ public class ChatServer extends WebSocketServer {
             Message toSender = new Message(
                     Message.Type.WHISPER,
                     "[Whisper ->] " + targetName,
-                    whisperText,
+                    encrypted,
                     "§5[Whisper ->] " + targetName + "§r",
                     null,
                     true
@@ -332,7 +379,7 @@ public class ChatServer extends WebSocketServer {
             lastWhisperFrom.put(targetConn, senderName);
             lastWhisperFrom.put(senderConn, targetName);
 
-            LOGGER.info("Whisper: " + senderName + " -> " + targetName + ": " + whisperText);
+            LOGGER.info("Whisper: " + senderName + " -> " + targetName + " (" + whisperText.length() + " chars)");
         } else {
             sendSystemMessage(senderConn, "User '" + targetName + "' not found or not online.");
         }
@@ -355,10 +402,19 @@ public class ChatServer extends WebSocketServer {
 
         WebSocket targetConn = userConnections.get(targetName.toLowerCase());
         if (targetConn != null && targetConn.isOpen()) {
+            String encrypted;
+            try {
+                encrypted = encryptWhisper(replyMsg);
+            } catch (Exception e) {
+                LOGGER.log(Level.SEVERE, "Failed to encrypt whisper reply", e);
+                sendSystemMessage(senderConn, "Failed to send whisper (encryption error).");
+                return;
+            }
+
             Message toTarget = new Message(
                     Message.Type.WHISPER,
                     "[Whisper] " + senderName,
-                    replyMsg,
+                    encrypted,
                     "§d[Whisper] " + senderName + "§r",
                     null,
                     true
@@ -366,7 +422,7 @@ public class ChatServer extends WebSocketServer {
             Message toSender = new Message(
                     Message.Type.WHISPER,
                     "[Whisper ->] " + targetName,
-                    replyMsg,
+                    encrypted,
                     "§5[Whisper ->] " + targetName + "§r",
                     null,
                     true
@@ -377,7 +433,7 @@ public class ChatServer extends WebSocketServer {
 
             lastWhisperFrom.put(targetConn, senderName);
 
-            LOGGER.info("Reply whisper: " + senderName + " -> " + targetName + ": " + replyMsg);
+            LOGGER.info("Reply whisper: " + senderName + " -> " + targetName + " (" + replyMsg.length() + " chars)");
         } else {
             sendSystemMessage(senderConn, "User '" + targetName + "' not found or not online.");
         }
