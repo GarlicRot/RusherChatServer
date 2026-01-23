@@ -3,10 +3,10 @@ package garlicrot.rusherchatserver;
 public class Message {
 
     public enum Type {
-        LOGIN,   // initial handshake to bind username
-        CHAT,    // normal public chat
-        SYSTEM,  // server/system messages
-        WHISPER  // private messages
+        LOGIN,
+        CHAT,
+        SYSTEM,
+        WHISPER
     }
 
     private Type type;
@@ -16,12 +16,12 @@ public class Message {
     private String target;
     private boolean whisper;
 
-    // Required no-arg constructor for Gson
+    // For E2EE key distribution (LOGIN messages)
+    private String publicKey;
+
     public Message() {
         this.type = Type.CHAT;
     }
-
-    // Convenience constructors
 
     public Message(String username, String content) {
         this(Type.CHAT, username, content, null, null, false);
@@ -31,8 +31,16 @@ public class Message {
         this(Type.CHAT, username, content, coloredUsername, null, false);
     }
 
-    public Message(String username, String content, String coloredUsername, String target, boolean whisper) {
+    public Message(String username,
+                   String content,
+                   String coloredUsername,
+                   String target,
+                   boolean whisper) {
         this(Type.CHAT, username, content, coloredUsername, target, whisper);
+    }
+
+    public Message(Type type, String username, String content) {
+        this(type, username, content, null, null, false);
     }
 
     public Message(Type type,
@@ -50,7 +58,7 @@ public class Message {
     }
 
     public Type getType() {
-        return type;
+        return type != null ? type : Type.CHAT;
     }
 
     public String getUsername() {
@@ -73,19 +81,11 @@ public class Message {
         return whisper;
     }
 
-    public void setType(Type type) {
-        this.type = type;
+    public String getPublicKey() {
+        return publicKey;
     }
 
-    public void setColoredUsername(String coloredUsername) {
-        this.coloredUsername = coloredUsername;
-    }
-
-    public void setTarget(String target) {
-        this.target = target;
-    }
-
-    public void setWhisper(boolean whisper) {
-        this.whisper = whisper;
+    public void setPublicKey(String publicKey) {
+        this.publicKey = publicKey;
     }
 }
