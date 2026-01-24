@@ -110,6 +110,9 @@ public class ChatServer extends WebSocketServer {
             String keyLower = username.toLowerCase();
             userConnections.remove(keyLower);
             userPublicKeys.remove(keyLower);
+
+            // notify everyone of updated online list
+            broadcastOnlineList();
         }
     }
 
@@ -289,11 +292,13 @@ public class ChatServer extends WebSocketServer {
 
             LOGGER.info("Stored public key for " + requestedName + " and distributed to clients");
         } else {
-
             LOGGER.warning("Client " + requestedName + " did not provide a public key; E2EE whispers will fall back to non-functional.");
         }
 
         LOGGER.info("User logged in: " + requestedName + " from " + conn.getRemoteSocketAddress());
+
+        // After a successful login, send everyone an updated online list
+        broadcastOnlineList();
     }
 
     // --- Chat / whisper routing ---
@@ -403,6 +408,27 @@ public class ChatServer extends WebSocketServer {
                 false
         );
         conn.send(gson.toJson(sys));
+    }
+
+    /**
+     * Broadcasts the current list of online usernames to all clients.
+     * Content format: "ONLINE_LIST:name1,name2,name3"
+     */
+    private void broadcastOnlineList() {
+        String list = String.join(",", usernames.values());
+        String content = "ONLINE_LIST:" + list;
+
+        Message msg = new Message(
+                Message.Type.SYSTEM,
+                "[System]",
+                content,
+                "§e[System]§r",
+                null,
+                false
+        );
+
+        broadcastToAll(gson.toJson(msg));
+        LOGGER.fine("Broadcasted ONLINE_LIST for " + usernames.size() + " users");
     }
 
     public static void shutdown() {
