@@ -362,17 +362,8 @@ public class ChatServer extends WebSocketServer {
                     true
             );
 
-            Message toSender = new Message(
-                    Message.Type.WHISPER,
-                    "[Whisper ->] " + targetName,
-                    cipherText,
-                    "§5[Whisper ->] " + targetName + "§r",
-                    targetName,
-                    true
-            );
-
+            // Send ONLY to the target – sender already has a local plaintext echo
             targetConn.send(gson.toJson(toTarget));
-            senderConn.send(gson.toJson(toSender));
 
             LOGGER.info("WHISPER routed: " + senderName + " -> " + targetName
                     + " (" + cipherText.length() + " chars, opaque to server)");
