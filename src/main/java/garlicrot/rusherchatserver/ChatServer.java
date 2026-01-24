@@ -26,8 +26,9 @@ public class ChatServer extends WebSocketServer {
 
     private final Map<WebSocket, Long> lastMessageTime = new ConcurrentHashMap<>();
     private final Map<WebSocket, String> usernames = new ConcurrentHashMap<>();
-    private final Map<String, WebSocket> userConnections = new ConcurrentHashMap<>(); // key: lowercase username
-    // Stores public keys for users (key = exact username as provided on login)
+    // username (lowercase) -> connection
+    private final Map<String, WebSocket> userConnections = new ConcurrentHashMap<>();
+    // username (lowercase) -> base64 public key
     private final Map<String, String> userPublicKeys = new ConcurrentHashMap<>();
 
     private final Gson gson = new Gson();
@@ -106,8 +107,9 @@ public class ChatServer extends WebSocketServer {
 
         String username = usernames.remove(conn);
         if (username != null) {
-            userConnections.remove(username.toLowerCase());
-            userPublicKeys.remove(username);
+            String keyLower = username.toLowerCase();
+            userConnections.remove(keyLower);
+            userPublicKeys.remove(keyLower);
         }
     }
 
@@ -245,14 +247,22 @@ public class ChatServer extends WebSocketServer {
         userConnections.put(keyLower, conn);
 
         String publicKeyB64 = incoming.getPublicKey();
+
+        if (publicKeyB64 != null) {
+            LOGGER.info("LOGIN from " + requestedName + " with publicKey length=" + publicKeyB64.length());
+        } else {
+            LOGGER.info("LOGIN from " + requestedName + " with publicKey=null");
+        }
+
         if (publicKeyB64 != null && !publicKeyB64.isBlank()) {
-            userPublicKeys.put(requestedName, publicKeyB64);
+            // store by lowercase username for consistency
+            userPublicKeys.put(keyLower, publicKeyB64);
 
             // 1) Send all known keys (including this one) to the newly logged-in client
             for (Map.Entry<String, String> entry : userPublicKeys.entrySet()) {
-                String name = entry.getKey();
+                String nameLower = entry.getKey();
                 String key = entry.getValue();
-                String content = "USER_KEY:" + name + ":" + key;
+                String content = "USER_KEY:" + nameLower + ":" + key;
 
                 Message sys = new Message(
                         Message.Type.SYSTEM,
@@ -279,7 +289,8 @@ public class ChatServer extends WebSocketServer {
 
             LOGGER.info("Stored public key for " + requestedName + " and distributed to clients");
         } else {
-            LOGGER.warning("Client " + requestedName + " did not provide a public key; E2EE whispers may fail.");
+
+            LOGGER.warning("Client " + requestedName + " did not provide a public key; E2EE whispers will fall back to non-functional.");
         }
 
         LOGGER.info("User logged in: " + requestedName + " from " + conn.getRemoteSocketAddress());
