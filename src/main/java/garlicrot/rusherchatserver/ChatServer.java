@@ -1,13 +1,21 @@
 package garlicrot.rusherchatserver;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.java_websocket.WebSocket;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
 
 import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.*;
@@ -20,6 +28,17 @@ public class ChatServer extends WebSocketServer {
     private static final int DEFAULT_PORT = 42424;
     private static final int MAX_MESSAGE_LENGTH = 256;
     private static final long MIN_INTERVAL_MS = 1000;
+
+    private static final String PLUGIN_REPO_OWNER = "GarlicRot";
+    private static final String PLUGIN_REPO_NAME  = "RusherChat";
+    private static final String GITHUB_LATEST_RELEASE_API =
+            "https://api.github.com/repos/" + PLUGIN_REPO_OWNER + "/" + PLUGIN_REPO_NAME + "/releases/latest";
+
+    private static final String OUTDATED_PREFIX = "OUTDATED_PLUGIN:";
+
+    // Refresh cadence + timeouts
+    private static final long LATEST_REFRESH_MINUTES = 10;
+    private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(6);
 
     // --- Shared state ---
     private static final List<WebSocket> clients = new CopyOnWriteArrayList<>();
@@ -36,6 +55,9 @@ public class ChatServer extends WebSocketServer {
 
     private final Gson gson = new Gson();
     private final int port;
+
+    // --- Latest plugin info cache ---
+    private static final LatestPluginInfoCache LATEST = new LatestPluginInfoCache(GITHUB_LATEST_RELEASE_API);
 
     // --- Logging setup ---
     static {
@@ -62,7 +84,6 @@ public class ChatServer extends WebSocketServer {
     }
 
     // --- Constructors ---
-
     public ChatServer() {
         this(DEFAULT_PORT);
     }
@@ -84,7 +105,6 @@ public class ChatServer extends WebSocketServer {
     }
 
     // --- Main entrypoint ---
-
     public static void main(String[] args) {
         int port = DEFAULT_PORT;
 
@@ -99,6 +119,9 @@ public class ChatServer extends WebSocketServer {
         String version = detectServerVersion();
         LOGGER.info("RusherChatServer version: " + version);
 
+        // Start background refresh of latest plugin version
+        LATEST.startBackgroundRefresh();
+
         LOGGER.info("Starting WebSocket server on port " + port + "...");
         ChatServer server = new ChatServer(port);
         server.start();
@@ -107,7 +130,6 @@ public class ChatServer extends WebSocketServer {
     }
 
     // --- WebSocketServer overrides ---
-
     @Override
     public void onOpen(WebSocket conn, ClientHandshake handshake) {
         LOGGER.info("New WebSocket connection: " + conn.getRemoteSocketAddress());
@@ -129,7 +151,6 @@ public class ChatServer extends WebSocketServer {
             userConnections.remove(keyLower);
             userPublicKeys.remove(keyLower);
 
-            // notify everyone of updated online list
             broadcastOnlineList();
         }
     }
@@ -158,7 +179,6 @@ public class ChatServer extends WebSocketServer {
                 return;
             }
 
-            // From here on, only allow messages from logged-in connections.
             String username = usernames.get(conn);
             if (username == null) {
                 sendSystemMessage(conn, "You must log in before sending messages.");
@@ -179,9 +199,7 @@ public class ChatServer extends WebSocketServer {
                 case CHAT -> handleChat(username, incoming);
                 case WHISPER -> handleWhisperPacket(conn, username, incoming);
                 case SYSTEM -> LOGGER.fine("Ignoring client SYSTEM message from " + username);
-                case LOGIN -> {
-                    // already handled above
-                }
+                case LOGIN -> { /* already handled */ }
                 default -> LOGGER.warning("Unknown message type from " + username + ": " + type);
             }
         } catch (Exception e) {
@@ -203,7 +221,6 @@ public class ChatServer extends WebSocketServer {
     }
 
     // --- Command-line console listener (/shutdown, /users, /broadcast, /version) ---
-
     private static void startCommandListener(String serverVersion) {
         new Thread(() -> {
             try (var console = new java.io.BufferedReader(new java.io.InputStreamReader(System.in))) {
@@ -219,6 +236,13 @@ public class ChatServer extends WebSocketServer {
                         LOGGER.info("Connected clients: " + clients.size());
                     } else if (line.equalsIgnoreCase("/version")) {
                         LOGGER.info("RusherChatServer version: " + serverVersion);
+                    } else if (line.equalsIgnoreCase("/plugin")) {
+                        LatestPluginInfo info = LATEST.get();
+                        if (info == null || info.latestVersion == null) {
+                            LOGGER.info("Latest plugin: unknown (not fetched yet)");
+                        } else {
+                            LOGGER.info("Latest plugin: " + info.latestVersion + " (" + info.htmlUrl + ")");
+                        }
                     } else if (line.startsWith("/broadcast ")) {
                         String text = line.substring("/broadcast ".length()).trim();
                         if (!text.isEmpty()) {
@@ -247,7 +271,6 @@ public class ChatServer extends WebSocketServer {
     }
 
     // --- Login / key distribution ---
-
     private void handleLogin(WebSocket conn, Message incoming) {
         String requestedName = incoming.getUsername();
 
@@ -267,9 +290,7 @@ public class ChatServer extends WebSocketServer {
         usernames.put(conn, requestedName);
         userConnections.put(keyLower, conn);
 
-        // capture client version (may be null/blank)
-        String clientVersion = incoming.getClientVersion();
-        if (clientVersion == null || clientVersion.isBlank()) clientVersion = "unknown";
+        String clientVersion = normalizeClientVersion(incoming.getClientVersion());
         clientVersions.put(conn, clientVersion);
 
         String publicKeyB64 = incoming.getPublicKey();
@@ -278,15 +299,17 @@ public class ChatServer extends WebSocketServer {
                 + " (clientVersion=" + clientVersion + ")"
                 + " with publicKey " + (publicKeyB64 != null ? ("length=" + publicKeyB64.length()) : "null"));
 
+        // Only warn if outdated/unknown. If current, say nothing.
+        maybeWarnOutdatedPlugin(conn, clientVersion);
+
         if (publicKeyB64 != null && !publicKeyB64.isBlank()) {
-            // store by lowercase username for consistency
             userPublicKeys.put(keyLower, publicKeyB64);
 
-            // 1) Send all known keys (including this one) to the newly logged-in client
+            // 1) Send all known keys to the newly logged-in client
             for (Map.Entry<String, String> entry : userPublicKeys.entrySet()) {
-                String nameLower = entry.getKey();
+                String nameLower2 = entry.getKey();
                 String key = entry.getValue();
-                String content = "USER_KEY:" + nameLower + ":" + key;
+                String content = "USER_KEY:" + nameLower2 + ":" + key;
 
                 Message sys = new Message(
                         Message.Type.SYSTEM,
@@ -316,18 +339,83 @@ public class ChatServer extends WebSocketServer {
             LOGGER.warning("Client " + requestedName + " did not provide a public key; E2EE whispers may not work.");
         }
 
-        // ✅ Always send a human-readable welcome message (old plugins will show this)
-        String serverVersion = detectServerVersion();
-        sendSystemMessage(conn, "Connected to RusherChatServer v" + serverVersion + " (plugin v" + clientVersion + ").");
-
         LOGGER.info("User logged in: " + requestedName + " from " + conn.getRemoteSocketAddress());
-
-        // After a successful login, send everyone an updated online list
         broadcastOnlineList();
     }
 
-    // --- Chat / whisper routing ---
+    private static String normalizeClientVersion(String v) {
+        if (v == null) return "unknown";
+        v = v.trim();
+        if (v.isEmpty()) return "unknown";
+        if (v.equalsIgnoreCase("null")) return "unknown";
+        return v;
+    }
 
+    private void maybeWarnOutdatedPlugin(WebSocket conn, String clientVersion) {
+        LatestPluginInfo info = LATEST.get();
+        if (info == null || info.latestVersion == null || info.latestVersion.isBlank()) {
+            // Not fetched yet → don’t spam anyone.
+            return;
+        }
+
+        if ("dev".equalsIgnoreCase(clientVersion)) return;
+
+        // If old plugin doesn’t send version, warn.
+        if ("unknown".equalsIgnoreCase(clientVersion)) {
+            sendOutdated(conn, "unknown", info.latestVersion, info.htmlUrl);
+            return;
+        }
+
+        int cmp = compareSemverLoose(clientVersion, info.latestVersion);
+        if (cmp < 0) {
+            sendOutdated(conn, clientVersion, info.latestVersion, info.htmlUrl);
+        }
+        // equal/newer => say nothing
+    }
+
+    private void sendOutdated(WebSocket conn, String clientV, String latestV, String url) {
+        // structured (new clients)
+        sendSystemMessage(conn, OUTDATED_PREFIX + clientV + ":" + latestV + ":" + (url == null ? "" : url));
+
+        // fallback plain text (old clients)
+        sendSystemMessage(conn, "§cYour RusherChat plugin is outdated.");
+        sendSystemMessage(conn, "§7Installed: §f" + clientV + " §7| Latest: §f" + latestV);
+        if (url != null && !url.isBlank()) {
+            sendSystemMessage(conn, "§7Download: §b" + url);
+        }
+    }
+
+    // --- Version compare helpers ---
+    private static int compareSemverLoose(String a, String b) {
+        int[] av = parseVersionInts(a);
+        int[] bv = parseVersionInts(b);
+        for (int i = 0; i < 3; i++) {
+            if (av[i] < bv[i]) return -1;
+            if (av[i] > bv[i]) return 1;
+        }
+        return 0;
+    }
+
+    private static int[] parseVersionInts(String v) {
+        int[] out = new int[]{0, 0, 0};
+        if (v == null) return out;
+
+        v = v.trim();
+        if (v.startsWith("v") || v.startsWith("V")) v = v.substring(1);
+        v = v.split("[-+]", 2)[0];
+
+        String[] parts = v.split("\\.");
+        for (int i = 0; i < Math.min(parts.length, 3); i++) {
+            String p = parts[i].replaceAll("[^0-9]", "");
+            if (p.isEmpty()) continue;
+            try {
+                out[i] = Integer.parseInt(p);
+            } catch (NumberFormatException ignored) { }
+        }
+        return out;
+    }
+
+    // --- Chat / whisper routing ---
     private void handleChat(String username, Message incoming) {
         String content = incoming.getContent();
         if (content == null || content.trim().isEmpty()) {
@@ -395,7 +483,6 @@ public class ChatServer extends WebSocketServer {
     }
 
     // --- Broadcast helpers ---
-
     private static void broadcastToAll(String json) {
         for (WebSocket client : clients) {
             if (client.isOpen()) client.send(json);
@@ -449,5 +536,95 @@ public class ChatServer extends WebSocketServer {
             }
         }
         System.exit(0);
+    }
+
+    // ------------------------------------------------------------------------
+    // Latest plugin cache (GitHub releases/latest)
+    // ------------------------------------------------------------------------
+    private static final class LatestPluginInfo {
+        final String latestVersion; // tag_name
+        final String htmlUrl;       // html_url
+        final long fetchedAtMs;
+
+        LatestPluginInfo(String latestVersion, String htmlUrl, long fetchedAtMs) {
+            this.latestVersion = latestVersion;
+            this.htmlUrl = htmlUrl;
+            this.fetchedAtMs = fetchedAtMs;
+        }
+    }
+
+    private static final class LatestPluginInfoCache {
+        private final String apiUrl;
+        private final HttpClient http = HttpClient.newBuilder()
+                .connectTimeout(HTTP_TIMEOUT)
+                .build();
+
+        private final ScheduledExecutorService scheduler =
+                Executors.newSingleThreadScheduledExecutor(r -> {
+                    Thread t = new Thread(r, "LatestPluginRefresh");
+                    t.setDaemon(true);
+                    return t;
+                });
+
+        private volatile LatestPluginInfo cached;
+
+        LatestPluginInfoCache(String apiUrl) {
+            this.apiUrl = apiUrl;
+        }
+
+        LatestPluginInfo get() {
+            return cached;
+        }
+
+        void startBackgroundRefresh() {
+            // do an immediate fetch once
+            scheduler.execute(this::refreshOnceSafe);
+
+            // then refresh periodically
+            scheduler.scheduleAtFixedRate(
+                    this::refreshOnceSafe,
+                    LATEST_REFRESH_MINUTES,
+                    LATEST_REFRESH_MINUTES,
+                    TimeUnit.MINUTES
+            );
+        }
+
+        private void refreshOnceSafe() {
+            try {
+                LatestPluginInfo info = fetchLatest();
+                if (info != null && info.latestVersion != null && !info.latestVersion.isBlank()) {
+                    cached = info;
+                    LOGGER.info("Latest plugin cached: " + info.latestVersion
+                            + (info.htmlUrl != null ? " (" + info.htmlUrl + ")" : ""));
+                }
+            } catch (Exception e) {
+                LOGGER.log(Level.WARNING, "Failed to refresh latest plugin info (will retry)", e);
+            }
+        }
+
+        private LatestPluginInfo fetchLatest() throws Exception {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(apiUrl))
+                    .timeout(HTTP_TIMEOUT)
+                    // GitHub wants a user-agent
+                    .header("User-Agent", "RusherChatServer")
+                    .header("Accept", "application/vnd.github+json")
+                    .GET()
+                    .build();
+
+            HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (res.statusCode() < 200 || res.statusCode() >= 300) {
+                throw new IllegalStateException("GitHub API status " + res.statusCode() + ": " + res.body());
+            }
+
+            JsonObject obj = JsonParser.parseString(res.body()).getAsJsonObject();
+            String tag = obj.has("tag_name") ? obj.get("tag_name").getAsString() : null;
+            String html = obj.has("html_url") ? obj.get("html_url").getAsString() : null;
+
+            if (tag != null) tag = tag.trim();
+            if (tag != null && (tag.startsWith("v") || tag.startsWith("V"))) tag = tag.substring(1);
+
+            return new LatestPluginInfo(tag, html, System.currentTimeMillis());
+        }
     }
 }
