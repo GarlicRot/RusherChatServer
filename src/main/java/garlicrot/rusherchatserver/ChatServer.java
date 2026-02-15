@@ -31,6 +31,9 @@ public class ChatServer extends WebSocketServer {
     // username (lowercase) -> base64 public key
     private final Map<String, String> userPublicKeys = new ConcurrentHashMap<>();
 
+    // connection -> client plugin version (best effort)
+    private final Map<WebSocket, String> clientVersions = new ConcurrentHashMap<>();
+
     private final Gson gson = new Gson();
     private final int port;
 
@@ -118,6 +121,7 @@ public class ChatServer extends WebSocketServer {
 
         clients.remove(conn);
         lastMessageTime.remove(conn);
+        clientVersions.remove(conn);
 
         String username = usernames.remove(conn);
         if (username != null) {
@@ -206,9 +210,7 @@ public class ChatServer extends WebSocketServer {
                 String line;
                 while ((line = console.readLine()) != null) {
                     line = line.trim();
-                    if (line.isEmpty()) {
-                        continue;
-                    }
+                    if (line.isEmpty()) continue;
 
                     if (line.equalsIgnoreCase("/shutdown")) {
                         LOGGER.info("Shutdown command received from console.");
@@ -265,13 +267,16 @@ public class ChatServer extends WebSocketServer {
         usernames.put(conn, requestedName);
         userConnections.put(keyLower, conn);
 
+        // capture client version (may be null/blank)
+        String clientVersion = incoming.getClientVersion();
+        if (clientVersion == null || clientVersion.isBlank()) clientVersion = "unknown";
+        clientVersions.put(conn, clientVersion);
+
         String publicKeyB64 = incoming.getPublicKey();
 
-        if (publicKeyB64 != null) {
-            LOGGER.info("LOGIN from " + requestedName + " with publicKey length=" + publicKeyB64.length());
-        } else {
-            LOGGER.info("LOGIN from " + requestedName + " with publicKey=null");
-        }
+        LOGGER.info("LOGIN from " + requestedName
+                + " (clientVersion=" + clientVersion + ")"
+                + " with publicKey " + (publicKeyB64 != null ? ("length=" + publicKeyB64.length()) : "null"));
 
         if (publicKeyB64 != null && !publicKeyB64.isBlank()) {
             // store by lowercase username for consistency
@@ -308,8 +313,12 @@ public class ChatServer extends WebSocketServer {
 
             LOGGER.info("Stored public key for " + requestedName + " and distributed to clients");
         } else {
-            LOGGER.warning("Client " + requestedName + " did not provide a public key; E2EE whispers will fall back to non-functional.");
+            LOGGER.warning("Client " + requestedName + " did not provide a public key; E2EE whispers may not work.");
         }
+
+        // ✅ Always send a human-readable welcome message (old plugins will show this)
+        String serverVersion = detectServerVersion();
+        sendSystemMessage(conn, "Connected to RusherChatServer v" + serverVersion + " (plugin v" + clientVersion + ").");
 
         LOGGER.info("User logged in: " + requestedName + " from " + conn.getRemoteSocketAddress());
 
@@ -328,7 +337,6 @@ public class ChatServer extends WebSocketServer {
 
         String trimmed = content.trim();
 
-        // Enforce chat message length (OK to truncate here – it's plain text)
         if (trimmed.length() > MAX_MESSAGE_LENGTH) {
             trimmed = trimmed.substring(0, MAX_MESSAGE_LENGTH);
             sendSystemMessage(
@@ -347,18 +355,11 @@ public class ChatServer extends WebSocketServer {
                 null,
                 false
         );
-        String json = gson.toJson(colored);
 
-        broadcastToAll(json);
+        broadcastToAll(gson.toJson(colored));
         LOGGER.info("Message from " + username + ": " + trimmed);
     }
 
-    /**
-     * E2EE-friendly whisper routing:
-     * - content is already encrypted by the client
-     * - server does not encrypt or decrypt
-     * - server only routes based on `target` and `username`
-     */
     private void handleWhisperPacket(WebSocket senderConn, String senderName, Message incoming) {
         String targetName = incoming.getTarget();
         String cipherText = incoming.getContent();
@@ -375,7 +376,6 @@ public class ChatServer extends WebSocketServer {
 
         WebSocket targetConn = userConnections.get(targetName.toLowerCase());
         if (targetConn != null && targetConn.isOpen()) {
-            // NOTE: Do NOT modify cipherText; client expects it intact.
             Message toTarget = new Message(
                     Message.Type.WHISPER,
                     "[Whisper] " + senderName,
@@ -385,7 +385,6 @@ public class ChatServer extends WebSocketServer {
                     true
             );
 
-            // Send ONLY to the target – sender already has a local plaintext echo
             targetConn.send(gson.toJson(toTarget));
 
             LOGGER.info("WHISPER routed: " + senderName + " -> " + targetName
@@ -399,17 +398,13 @@ public class ChatServer extends WebSocketServer {
 
     private static void broadcastToAll(String json) {
         for (WebSocket client : clients) {
-            if (client.isOpen()) {
-                client.send(json);
-            }
+            if (client.isOpen()) client.send(json);
         }
     }
 
     private static void broadcastToAllExcept(WebSocket exclude, String json) {
         for (WebSocket client : clients) {
-            if (client != exclude && client.isOpen()) {
-                client.send(json);
-            }
+            if (client != exclude && client.isOpen()) client.send(json);
         }
     }
 
@@ -427,10 +422,6 @@ public class ChatServer extends WebSocketServer {
         conn.send(gson.toJson(sys));
     }
 
-    /**
-     * Broadcasts the current list of online usernames to all clients.
-     * Content format: "ONLINE_LIST:name1,name2,name3"
-     */
     private void broadcastOnlineList() {
         String list = String.join(",", usernames.values());
         String content = "ONLINE_LIST:" + list;

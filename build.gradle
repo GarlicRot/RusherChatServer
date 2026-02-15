@@ -22,19 +22,18 @@ test {
 }
 
 jar {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
     manifest {
         attributes(
                 'Main-Class': 'garlicrot.rusherchatserver.ChatServer',
-
                 'Implementation-Title': 'RusherChatServer',
-                'Implementation-Version': project.version.toString(),
-                'Implementation-Vendor': 'GarlicRot'
+                'Implementation-Version': project.version.toString()
         )
     }
 
+    // Include all dependencies inside the JAR
     from {
         configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
     }
-
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }

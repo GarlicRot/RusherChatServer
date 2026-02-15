@@ -19,6 +19,10 @@ public class Message {
     // For E2EE key distribution (LOGIN messages)
     private String publicKey;
 
+    // Version handshake (client -> server)
+    // Client sends this during LOGIN so the server can log/compare.
+    private String clientVersion;
+
     public Message() {
         this.type = Type.CHAT;
     }
@@ -87,5 +91,13 @@ public class Message {
 
     public void setPublicKey(String publicKey) {
         this.publicKey = publicKey;
+    }
+
+    public String getClientVersion() {
+        return clientVersion;
+    }
+
+    public void setClientVersion(String clientVersion) {
+        this.clientVersion = clientVersion;
     }
 }
