@@ -1,14 +1,10 @@
-name: Build and Attach JAR to Release
+name: Build and Attach Server JAR to Release
 
 on:
-  # Trigger when you publish a release from the GitHub UI
   release:
     types: [published]
-
-  # Optional: allow manual runs from the Actions tab
   workflow_dispatch: {}
 
-# Needed so the workflow can upload assets to the release
 permissions:
   contents: write
 
@@ -29,22 +25,38 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Build with Gradle
+      - name: Build (fat jar)
         run: ./gradlew clean build -x test
 
-      # Optional: keep artifacts for debugging / download from Actions
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: rusherchatserver-jars
-          path: build/libs/*.jar
+      - name: Show built files
+        run: ls -la build/libs
+
+      - name: Pick release JAR
+        id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Prefer shadow/fat jar naming conventions if present
+          jar="$(ls -1 build/libs/*-all.jar 2>/dev/null | head -n 1 || true)"
+          if [ -z "$jar" ]; then
+            # Fallback: pick a single non-sources jar
+            jar="$(ls -1 build/libs/*.jar 2>/dev/null | grep -vE '(-sources|-javadoc)\.jar$' | head -n 1 || true)"
+          fi
+
+          if [ -z "$jar" ]; then
+            echo "No suitable jar found in build/libs"
+            exit 1
+          fi
+
+          echo "Selected jar: $jar"
+          echo "jar_path=$jar" >> "$GITHUB_OUTPUT"
 
       - name: Upload JAR to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # Use the tag of the release that triggered this workflow
           tag_name: ${{ github.event.release.tag_name }}
-          files: build/libs/*.jar
+          files: ${{ steps.pick.outputs.jar_path }}
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
