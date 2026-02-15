@@ -2,14 +2,14 @@ package garlicrot.rusherchatserver;
 
 import com.google.gson.Gson;
 import org.java_websocket.WebSocket;
-import org.java_websocket.server.WebSocketServer;
 import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.server.WebSocketServer;
 
 import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.*;
 
 public class ChatServer extends WebSocketServer {
@@ -69,6 +69,17 @@ public class ChatServer extends WebSocketServer {
         this.port = port;
     }
 
+    private static String detectServerVersion() {
+        try {
+            Package p = ChatServer.class.getPackage();
+            if (p == null) return "dev";
+            String v = p.getImplementationVersion();
+            return (v != null && !v.isBlank()) ? v : "dev";
+        } catch (Exception ignored) {
+            return "dev";
+        }
+    }
+
     // --- Main entrypoint ---
 
     public static void main(String[] args) {
@@ -82,11 +93,14 @@ public class ChatServer extends WebSocketServer {
             }
         }
 
+        String version = detectServerVersion();
+        LOGGER.info("RusherChatServer version: " + version);
+
         LOGGER.info("Starting WebSocket server on port " + port + "...");
         ChatServer server = new ChatServer(port);
         server.start();
         LOGGER.info("WebSocket server is up and running");
-        startCommandListener();
+        startCommandListener(version);
     }
 
     // --- WebSocketServer overrides ---
@@ -184,9 +198,9 @@ public class ChatServer extends WebSocketServer {
         setConnectionLostTimeout(60);
     }
 
-    // --- Command-line console listener (/shutdown, /users, /broadcast) ---
+    // --- Command-line console listener (/shutdown, /users, /broadcast, /version) ---
 
-    private static void startCommandListener() {
+    private static void startCommandListener(String serverVersion) {
         new Thread(() -> {
             try (var console = new java.io.BufferedReader(new java.io.InputStreamReader(System.in))) {
                 String line;
@@ -201,6 +215,8 @@ public class ChatServer extends WebSocketServer {
                         shutdown();
                     } else if (line.equalsIgnoreCase("/users")) {
                         LOGGER.info("Connected clients: " + clients.size());
+                    } else if (line.equalsIgnoreCase("/version")) {
+                        LOGGER.info("RusherChatServer version: " + serverVersion);
                     } else if (line.startsWith("/broadcast ")) {
                         String text = line.substring("/broadcast ".length()).trim();
                         if (!text.isEmpty()) {
@@ -315,8 +331,10 @@ public class ChatServer extends WebSocketServer {
         // Enforce chat message length (OK to truncate here – it's plain text)
         if (trimmed.length() > MAX_MESSAGE_LENGTH) {
             trimmed = trimmed.substring(0, MAX_MESSAGE_LENGTH);
-            sendSystemMessage(userConnections.get(username.toLowerCase()),
-                    "Your message was too long and was truncated.");
+            sendSystemMessage(
+                    userConnections.get(username.toLowerCase()),
+                    "Your message was too long and was truncated."
+            );
             LOGGER.warning("Truncated long message from " + username);
         }
 
@@ -396,9 +414,8 @@ public class ChatServer extends WebSocketServer {
     }
 
     private void sendSystemMessage(WebSocket conn, String text) {
-        if (conn == null) {
-            return;
-        }
+        if (conn == null) return;
+
         Message sys = new Message(
                 Message.Type.SYSTEM,
                 "[System]",
