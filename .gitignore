@@ -51,7 +51,7 @@ desktop.ini
 # Local run/start scripts
 start-chat-server.bat
 
-# Cloudflared credentials (highly recommended to ignore)
+# Cloudflared credentials
 *.json
 cert.pem
 config.yml
