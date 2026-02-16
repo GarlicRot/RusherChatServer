@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.*;
 
 public class ChatServer extends WebSocketServer {
@@ -36,8 +37,9 @@ public class ChatServer extends WebSocketServer {
 
     private static final String OUTDATED_PREFIX = "OUTDATED_PLUGIN:";
 
-    // Refresh cadence + timeouts
-    private static final long LATEST_REFRESH_MINUTES = 10;
+    // Refresh cadence (few times a day) + stale TTL for on-demand background refresh
+    private static final long LATEST_REFRESH_HOURS = 6;
+    private static final long STALE_TTL_MINUTES = 15;
     private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(6);
 
     // --- Shared state ---
@@ -45,18 +47,13 @@ public class ChatServer extends WebSocketServer {
 
     private final Map<WebSocket, Long> lastMessageTime = new ConcurrentHashMap<>();
     private final Map<WebSocket, String> usernames = new ConcurrentHashMap<>();
-    // username (lowercase) -> connection
-    private final Map<String, WebSocket> userConnections = new ConcurrentHashMap<>();
-    // username (lowercase) -> base64 public key
-    private final Map<String, String> userPublicKeys = new ConcurrentHashMap<>();
-
-    // connection -> client plugin version (best effort)
-    private final Map<WebSocket, String> clientVersions = new ConcurrentHashMap<>();
+    private final Map<String, WebSocket> userConnections = new ConcurrentHashMap<>(); // usernameLower -> conn
+    private final Map<String, String> userPublicKeys = new ConcurrentHashMap<>();     // usernameLower -> pubKeyB64
+    private final Map<WebSocket, String> clientVersions = new ConcurrentHashMap<>(); // conn -> clientVersion
 
     private final Gson gson = new Gson();
     private final int port;
 
-    // --- Latest plugin info cache ---
     private static final LatestPluginInfoCache LATEST = new LatestPluginInfoCache(GITHUB_LATEST_RELEASE_API);
 
     // --- Logging setup ---
@@ -104,7 +101,6 @@ public class ChatServer extends WebSocketServer {
         }
     }
 
-    // --- Main entrypoint ---
     public static void main(String[] args) {
         int port = DEFAULT_PORT;
 
@@ -119,13 +115,14 @@ public class ChatServer extends WebSocketServer {
         String version = detectServerVersion();
         LOGGER.info("RusherChatServer version: " + version);
 
-        // Start background refresh of latest plugin version
+        // Refresh latest plugin info periodically + on-demand (stale) refresh in background
         LATEST.startBackgroundRefresh();
 
         LOGGER.info("Starting WebSocket server on port " + port + "...");
         ChatServer server = new ChatServer(port);
         server.start();
         LOGGER.info("WebSocket server is up and running");
+
         startCommandListener(version);
     }
 
@@ -150,14 +147,12 @@ public class ChatServer extends WebSocketServer {
             String keyLower = username.toLowerCase();
             userConnections.remove(keyLower);
             userPublicKeys.remove(keyLower);
-
             broadcastOnlineList();
         }
     }
 
     @Override
     public void onMessage(WebSocket conn, String message) {
-        // ping/pong health check
         if ("ping".equalsIgnoreCase(message)) {
             conn.send("pong");
             return;
@@ -166,14 +161,13 @@ public class ChatServer extends WebSocketServer {
         try {
             Message incoming = gson.fromJson(message, Message.class);
             if (incoming == null) {
-                LOGGER.warning("Received null/invalid JSON message: " + message);
+                LOGGER.warning("Received null/invalid JSON message");
                 sendSystemMessage(conn, "Invalid message format.");
                 return;
             }
 
             Message.Type type = incoming.getType();
 
-            // --- LOGIN handshake ---
             if (type == Message.Type.LOGIN) {
                 handleLogin(conn, incoming);
                 return;
@@ -185,12 +179,11 @@ public class ChatServer extends WebSocketServer {
                 return;
             }
 
-            // Rate limit (applies to CHAT + WHISPER)
             long now = System.currentTimeMillis();
             Long last = lastMessageTime.get(conn);
             if (last != null && now - last < MIN_INTERVAL_MS) {
                 sendSystemMessage(conn, "You are sending messages too quickly. Please slow down.");
-                LOGGER.warning("Rate limit exceeded by " + username);
+                LOGGER.fine("Rate limit exceeded by " + username);
                 return;
             }
             lastMessageTime.put(conn, now);
@@ -199,11 +192,11 @@ public class ChatServer extends WebSocketServer {
                 case CHAT -> handleChat(username, incoming);
                 case WHISPER -> handleWhisperPacket(conn, username, incoming);
                 case SYSTEM -> LOGGER.fine("Ignoring client SYSTEM message from " + username);
-                case LOGIN -> { /* already handled */ }
+                case LOGIN -> { /* handled above */ }
                 default -> LOGGER.warning("Unknown message type from " + username + ": " + type);
             }
         } catch (Exception e) {
-            LOGGER.log(Level.WARNING, "Failed to process message: " + message + " — " + e.getMessage(), e);
+            LOGGER.log(Level.WARNING, "Failed to process incoming message", e);
             sendSystemMessage(conn, "An error occurred while processing your message.");
         }
     }
@@ -220,7 +213,7 @@ public class ChatServer extends WebSocketServer {
         setConnectionLostTimeout(60);
     }
 
-    // --- Command-line console listener (/shutdown, /users, /broadcast, /version) ---
+    // --- Console commands (/shutdown, /users, /broadcast, /version, /plugin) ---
     private static void startCommandListener(String serverVersion) {
         new Thread(() -> {
             try (var console = new java.io.BufferedReader(new java.io.InputStreamReader(System.in))) {
@@ -254,8 +247,7 @@ public class ChatServer extends WebSocketServer {
                                     null,
                                     false
                             );
-                            String json = new Gson().toJson(broadcastMsg);
-                            broadcastToAll(json);
+                            broadcastToAll(new Gson().toJson(broadcastMsg));
                             LOGGER.info("Broadcast sent: " + text);
                         } else {
                             LOGGER.warning("Broadcast command used with empty message.");
@@ -295,17 +287,15 @@ public class ChatServer extends WebSocketServer {
 
         String publicKeyB64 = incoming.getPublicKey();
 
-        LOGGER.info("LOGIN from " + requestedName
-                + " (clientVersion=" + clientVersion + ")"
-                + " with publicKey " + (publicKeyB64 != null ? ("length=" + publicKeyB64.length()) : "null"));
+        LOGGER.info("LOGIN " + requestedName
+                + " (clientVersion=" + clientVersion + ", key=" + (publicKeyB64 != null && !publicKeyB64.isBlank() ? "yes" : "no") + ")");
 
-        // Only warn if outdated/unknown. If current, say nothing.
         maybeWarnOutdatedPlugin(conn, clientVersion);
 
         if (publicKeyB64 != null && !publicKeyB64.isBlank()) {
             userPublicKeys.put(keyLower, publicKeyB64);
 
-            // 1) Send all known keys to the newly logged-in client
+            // Send all known keys to the new client
             for (Map.Entry<String, String> entry : userPublicKeys.entrySet()) {
                 String nameLower2 = entry.getKey();
                 String key = entry.getValue();
@@ -322,7 +312,7 @@ public class ChatServer extends WebSocketServer {
                 conn.send(gson.toJson(sys));
             }
 
-            // 2) Broadcast this user's key to everyone else
+            // Broadcast this user's key to everyone else
             String newKeyContent = "USER_KEY:" + requestedName + ":" + publicKeyB64;
             Message keyAnnouncement = new Message(
                     Message.Type.SYSTEM,
@@ -336,10 +326,9 @@ public class ChatServer extends WebSocketServer {
 
             LOGGER.info("Stored public key for " + requestedName + " and distributed to clients");
         } else {
-            LOGGER.warning("Client " + requestedName + " did not provide a public key; E2EE whispers may not work.");
+            LOGGER.fine("Client " + requestedName + " did not provide a public key; E2EE whispers may not work.");
         }
 
-        LOGGER.info("User logged in: " + requestedName + " from " + conn.getRemoteSocketAddress());
         broadcastOnlineList();
     }
 
@@ -352,15 +341,11 @@ public class ChatServer extends WebSocketServer {
     }
 
     private void maybeWarnOutdatedPlugin(WebSocket conn, String clientVersion) {
-        LatestPluginInfo info = LATEST.get();
-        if (info == null || info.latestVersion == null || info.latestVersion.isBlank()) {
-            // Not fetched yet → don’t spam anyone.
-            return;
-        }
+        LatestPluginInfo info = LATEST.getFresh();
+        if (info == null || info.latestVersion == null || info.latestVersion.isBlank()) return;
 
         if ("dev".equalsIgnoreCase(clientVersion)) return;
 
-        // If old plugin doesn’t send version, warn.
         if ("unknown".equalsIgnoreCase(clientVersion)) {
             sendOutdated(conn, "unknown", info.latestVersion, info.htmlUrl);
             return;
@@ -370,14 +355,11 @@ public class ChatServer extends WebSocketServer {
         if (cmp < 0) {
             sendOutdated(conn, clientVersion, info.latestVersion, info.htmlUrl);
         }
-        // equal/newer => say nothing
     }
 
     private void sendOutdated(WebSocket conn, String clientV, String latestV, String url) {
-        // structured (new clients)
         sendSystemMessage(conn, OUTDATED_PREFIX + clientV + ":" + latestV + ":" + (url == null ? "" : url));
 
-        // fallback plain text (old clients)
         sendSystemMessage(conn, "§cYour RusherChat plugin is outdated.");
         sendSystemMessage(conn, "§7Installed: §f" + clientV + " §7| Latest: §f" + latestV);
         if (url != null && !url.isBlank()) {
@@ -419,7 +401,7 @@ public class ChatServer extends WebSocketServer {
     private void handleChat(String username, Message incoming) {
         String content = incoming.getContent();
         if (content == null || content.trim().isEmpty()) {
-            LOGGER.fine("Skipping empty or null chat message from " + username);
+            LOGGER.fine("Skipping empty chat message from " + username);
             return;
         }
 
@@ -427,11 +409,8 @@ public class ChatServer extends WebSocketServer {
 
         if (trimmed.length() > MAX_MESSAGE_LENGTH) {
             trimmed = trimmed.substring(0, MAX_MESSAGE_LENGTH);
-            sendSystemMessage(
-                    userConnections.get(username.toLowerCase()),
-                    "Your message was too long and was truncated."
-            );
-            LOGGER.warning("Truncated long message from " + username);
+            sendSystemMessage(userConnections.get(username.toLowerCase()), "Your message was too long and was truncated.");
+            LOGGER.fine("Truncated long message from " + username);
         }
 
         String coloredUsername = UserColorManager.getColoredUsername(username);
@@ -445,7 +424,7 @@ public class ChatServer extends WebSocketServer {
         );
 
         broadcastToAll(gson.toJson(colored));
-        LOGGER.info("Message from " + username + ": " + trimmed);
+        LOGGER.fine("CHAT " + username + ": " + trimmed);
     }
 
     private void handleWhisperPacket(WebSocket senderConn, String senderName, Message incoming) {
@@ -474,9 +453,7 @@ public class ChatServer extends WebSocketServer {
             );
 
             targetConn.send(gson.toJson(toTarget));
-
-            LOGGER.info("WHISPER routed: " + senderName + " -> " + targetName
-                    + " (" + cipherText.length() + " chars, opaque to server)");
+            LOGGER.fine("WHISPER " + senderName + " -> " + targetName + " (" + cipherText.length() + " chars)");
         } else {
             sendSystemMessage(senderConn, "User '" + targetName + "' not found or not online.");
         }
@@ -538,12 +515,10 @@ public class ChatServer extends WebSocketServer {
         System.exit(0);
     }
 
-    // ------------------------------------------------------------------------
-    // Latest plugin cache (GitHub releases/latest)
-    // ------------------------------------------------------------------------
+    // --- Latest plugin cache (GitHub releases/latest) ---
     private static final class LatestPluginInfo {
-        final String latestVersion; // tag_name
-        final String htmlUrl;       // html_url
+        final String latestVersion;
+        final String htmlUrl;
         final long fetchedAtMs;
 
         LatestPluginInfo(String latestVersion, String htmlUrl, long fetchedAtMs) {
@@ -567,6 +542,7 @@ public class ChatServer extends WebSocketServer {
                 });
 
         private volatile LatestPluginInfo cached;
+        private final AtomicBoolean refreshInFlight = new AtomicBoolean(false);
 
         LatestPluginInfoCache(String apiUrl) {
             this.apiUrl = apiUrl;
@@ -576,26 +552,56 @@ public class ChatServer extends WebSocketServer {
             return cached;
         }
 
+        // Return cache immediately; refresh in background if stale/missing.
+        LatestPluginInfo getFresh() {
+            LatestPluginInfo info = cached;
+            long now = System.currentTimeMillis();
+            long staleTtlMs = TimeUnit.MINUTES.toMillis(STALE_TTL_MINUTES);
+
+            boolean stale = (info == null) || (now - info.fetchedAtMs) > staleTtlMs;
+            if (stale) {
+                triggerRefreshAsync();
+            }
+            return info;
+        }
+
         void startBackgroundRefresh() {
-            // do an immediate fetch once
             scheduler.execute(this::refreshOnceSafe);
 
-            // then refresh periodically
             scheduler.scheduleAtFixedRate(
                     this::refreshOnceSafe,
-                    LATEST_REFRESH_MINUTES,
-                    LATEST_REFRESH_MINUTES,
-                    TimeUnit.MINUTES
+                    LATEST_REFRESH_HOURS,
+                    LATEST_REFRESH_HOURS,
+                    TimeUnit.HOURS
             );
+        }
+
+        private void triggerRefreshAsync() {
+            if (!refreshInFlight.compareAndSet(false, true)) return;
+
+            scheduler.execute(() -> {
+                try {
+                    refreshOnceSafe();
+                } finally {
+                    refreshInFlight.set(false);
+                }
+            });
         }
 
         private void refreshOnceSafe() {
             try {
                 LatestPluginInfo info = fetchLatest();
                 if (info != null && info.latestVersion != null && !info.latestVersion.isBlank()) {
+                    LatestPluginInfo prev = cached;
                     cached = info;
-                    LOGGER.info("Latest plugin cached: " + info.latestVersion
-                            + (info.htmlUrl != null ? " (" + info.htmlUrl + ")" : ""));
+
+                    String prevV = (prev != null ? prev.latestVersion : null);
+                    if (prevV == null || !prevV.equals(info.latestVersion)) {
+                        LOGGER.info("Latest plugin cached: " + info.latestVersion
+                                + (info.htmlUrl != null ? " (" + info.htmlUrl + ")" : ""));
+                    } else {
+                        LOGGER.fine("Latest plugin unchanged: " + info.latestVersion);
+                    }
                 }
             } catch (Exception e) {
                 LOGGER.log(Level.WARNING, "Failed to refresh latest plugin info (will retry)", e);
@@ -606,7 +612,6 @@ public class ChatServer extends WebSocketServer {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(apiUrl))
                     .timeout(HTTP_TIMEOUT)
-                    // GitHub wants a user-agent
                     .header("User-Agent", "RusherChatServer")
                     .header("Accept", "application/vnd.github+json")
                     .GET()
