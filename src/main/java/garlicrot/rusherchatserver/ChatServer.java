@@ -27,8 +27,11 @@ public class ChatServer extends WebSocketServer {
     private static final Logger LOGGER = Logger.getLogger(ChatServer.class.getName());
 
     private static final int DEFAULT_PORT = 42424;
-    private static final int MAX_MESSAGE_LENGTH = 256;
-    private static final long MIN_INTERVAL_MS = 1000;
+    private static final int DEFAULT_MAX_MESSAGE_LENGTH = 256;
+    private static final long DEFAULT_MIN_INTERVAL_MS = 1000;
+
+    private final int maxMessageLength;
+    private final long minIntervalMs;
 
     private static final String PLUGIN_REPO_OWNER = "GarlicRot";
     private static final String PLUGIN_REPO_NAME  = "RusherChat";
@@ -86,8 +89,18 @@ public class ChatServer extends WebSocketServer {
     }
 
     public ChatServer(int port) {
+        this(
+                port,
+                resolveIntEnv("RUSHERCHAT_MAX_MESSAGE_LENGTH", DEFAULT_MAX_MESSAGE_LENGTH, 1, 4096),
+                resolveLongEnv("RUSHERCHAT_MIN_INTERVAL_MS", DEFAULT_MIN_INTERVAL_MS, 0, 60_000)
+        );
+    }
+
+    public ChatServer(int port, int maxMessageLength, long minIntervalMs) {
         super(new InetSocketAddress("0.0.0.0", port));
         this.port = port;
+        this.maxMessageLength = maxMessageLength;
+        this.minIntervalMs = minIntervalMs;
     }
 
     private static String detectServerVersion() {
@@ -125,6 +138,44 @@ public class ChatServer extends WebSocketServer {
         } catch (NumberFormatException e) {
             LOGGER.warning("Invalid port from " + source + " '" + rawPort + "', falling back to default: " + DEFAULT_PORT);
             return DEFAULT_PORT;
+        }
+    }
+
+    private static int resolveIntEnv(String envName, int defaultValue, int min, int max) {
+        String raw = System.getenv(envName);
+        if (raw == null || raw.isBlank()) {
+            return defaultValue;
+        }
+
+        try {
+            int parsed = Integer.parseInt(raw.trim());
+            if (parsed < min || parsed > max) {
+                LOGGER.warning("Invalid " + envName + " '" + raw + "', falling back to default: " + defaultValue);
+                return defaultValue;
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            LOGGER.warning("Invalid " + envName + " '" + raw + "', falling back to default: " + defaultValue);
+            return defaultValue;
+        }
+    }
+
+    private static long resolveLongEnv(String envName, long defaultValue, long min, long max) {
+        String raw = System.getenv(envName);
+        if (raw == null || raw.isBlank()) {
+            return defaultValue;
+        }
+
+        try {
+            long parsed = Long.parseLong(raw.trim());
+            if (parsed < min || parsed > max) {
+                LOGGER.warning("Invalid " + envName + " '" + raw + "', falling back to default: " + defaultValue);
+                return defaultValue;
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            LOGGER.warning("Invalid " + envName + " '" + raw + "', falling back to default: " + defaultValue);
+            return defaultValue;
         }
     }
 
@@ -200,7 +251,7 @@ public class ChatServer extends WebSocketServer {
 
             long now = System.currentTimeMillis();
             Long last = lastMessageTime.get(conn);
-            if (last != null && now - last < MIN_INTERVAL_MS) {
+            if (last != null && now - last < minIntervalMs) {
                 sendSystemMessage(conn, "You are sending messages too quickly. Please slow down.");
                 LOGGER.fine("Rate limit exceeded by " + username);
                 return;
@@ -426,8 +477,8 @@ public class ChatServer extends WebSocketServer {
 
         String trimmed = content.trim();
 
-        if (trimmed.length() > MAX_MESSAGE_LENGTH) {
-            trimmed = trimmed.substring(0, MAX_MESSAGE_LENGTH);
+        if (trimmed.length() > maxMessageLength) {
+            trimmed = trimmed.substring(0, maxMessageLength);
             sendSystemMessage(userConnections.get(username.toLowerCase()), "Your message was too long and was truncated.");
             LOGGER.fine("Truncated long message from " + username);
         }
