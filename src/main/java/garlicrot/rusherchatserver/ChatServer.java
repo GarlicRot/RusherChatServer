@@ -31,6 +31,7 @@ public class ChatServer extends WebSocketServer {
     private static final long DEFAULT_MIN_INTERVAL_MS = 1000;
     private static final int MIN_USERNAME_LENGTH = 3;
     private static final int MAX_USERNAME_LENGTH = 16;
+    private static final int MAX_PUBLIC_KEY_LENGTH = 2048;
     private static final String USERNAME_PATTERN = "^[A-Za-z0-9_]+$";
 
     private final int maxMessageLength;
@@ -362,6 +363,15 @@ public class ChatServer extends WebSocketServer {
         clientVersions.put(conn, clientVersion);
 
         String publicKeyB64 = incoming.getPublicKey();
+        if (publicKeyB64 != null) {
+            publicKeyB64 = publicKeyB64.trim();
+        }
+
+        if (publicKeyB64 != null && publicKeyB64.length() > MAX_PUBLIC_KEY_LENGTH) {
+            sendSystemMessage(conn, "Public key payload is too large.");
+            conn.close(1008, "Invalid public key");
+            return;
+        }
 
         LOGGER.info("LOGIN " + requestedName
                 + " (clientVersion=" + clientVersion + ", key=" + (publicKeyB64 != null && !publicKeyB64.isBlank() ? "yes" : "no") + ")");
@@ -518,10 +528,14 @@ public class ChatServer extends WebSocketServer {
 
     private void handleWhisperPacket(WebSocket senderConn, String senderName, Message incoming) {
         String targetName = incoming.getTarget();
+        if (targetName != null) {
+            targetName = targetName.trim();
+        }
+
         String cipherText = incoming.getContent();
 
-        if (targetName == null || targetName.isBlank()) {
-            sendSystemMessage(senderConn, "Whisper target missing.");
+        if (!isValidUsername(targetName)) {
+            sendSystemMessage(senderConn, "Invalid whisper target. " + usernameRulesMessage());
             return;
         }
 
