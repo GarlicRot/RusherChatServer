@@ -101,16 +101,35 @@ public class ChatServer extends WebSocketServer {
         }
     }
 
-    public static void main(String[] args) {
-        int port = DEFAULT_PORT;
-
+    private static int resolvePort(String[] args) {
         if (args.length > 0) {
-            try {
-                port = Integer.parseInt(args[0]);
-            } catch (NumberFormatException e) {
-                LOGGER.warning("Invalid port argument '" + args[0] + "', falling back to default: " + DEFAULT_PORT);
-            }
+            return parsePortOrDefault(args[0], "command line argument");
         }
+
+        String envPort = System.getenv("RUSHERCHAT_PORT");
+        if (envPort != null && !envPort.isBlank()) {
+            return parsePortOrDefault(envPort, "RUSHERCHAT_PORT");
+        }
+
+        return DEFAULT_PORT;
+    }
+
+    private static int parsePortOrDefault(String rawPort, String source) {
+        try {
+            int parsed = Integer.parseInt(rawPort.trim());
+            if (parsed < 1 || parsed > 65535) {
+                LOGGER.warning("Invalid port from " + source + " '" + rawPort + "', falling back to default: " + DEFAULT_PORT);
+                return DEFAULT_PORT;
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            LOGGER.warning("Invalid port from " + source + " '" + rawPort + "', falling back to default: " + DEFAULT_PORT);
+            return DEFAULT_PORT;
+        }
+    }
+
+    public static void main(String[] args) {
+        int port = resolvePort(args);
 
         String version = detectServerVersion();
         LOGGER.info("RusherChatServer version: " + version);
