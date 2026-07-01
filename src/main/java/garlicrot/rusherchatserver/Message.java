@@ -6,7 +6,13 @@ public class Message {
         LOGIN,
         CHAT,
         SYSTEM,
-        WHISPER
+        WHISPER,
+
+        // Structured server protocol messages.
+        // Kept separate from SYSTEM so clients do not need to parse magic string prefixes forever.
+        USER_KEY,
+        ONLINE_LIST,
+        OUTDATED_PLUGIN
     }
 
     private Type type;
