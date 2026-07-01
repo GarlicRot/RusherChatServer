@@ -29,6 +29,9 @@ public class ChatServer extends WebSocketServer {
     private static final int DEFAULT_PORT = 42424;
     private static final int DEFAULT_MAX_MESSAGE_LENGTH = 256;
     private static final long DEFAULT_MIN_INTERVAL_MS = 1000;
+    private static final int MIN_USERNAME_LENGTH = 3;
+    private static final int MAX_USERNAME_LENGTH = 16;
+    private static final String USERNAME_PATTERN = "^[A-Za-z0-9_]+$";
 
     private final int maxMessageLength;
     private final long minIntervalMs;
@@ -335,9 +338,12 @@ public class ChatServer extends WebSocketServer {
     // --- Login / key distribution ---
     private void handleLogin(WebSocket conn, Message incoming) {
         String requestedName = incoming.getUsername();
+        if (requestedName != null) {
+            requestedName = requestedName.trim();
+        }
 
-        if (requestedName == null || requestedName.isBlank()) {
-            sendSystemMessage(conn, "Username cannot be empty.");
+        if (!isValidUsername(requestedName)) {
+            sendSystemMessage(conn, usernameRulesMessage());
             conn.close(1008, "Invalid username");
             return;
         }
@@ -408,6 +414,19 @@ public class ChatServer extends WebSocketServer {
         if (v.isEmpty()) return "unknown";
         if (v.equalsIgnoreCase("null")) return "unknown";
         return v;
+    }
+
+    private static boolean isValidUsername(String username) {
+        if (username == null) return false;
+
+        String trimmed = username.trim();
+        return trimmed.length() >= MIN_USERNAME_LENGTH
+                && trimmed.length() <= MAX_USERNAME_LENGTH
+                && trimmed.matches(USERNAME_PATTERN);
+    }
+
+    private static String usernameRulesMessage() {
+        return "Username must be 3-16 characters and use only letters, numbers, or underscore.";
     }
 
     private void maybeWarnOutdatedPlugin(WebSocket conn, String clientVersion) {
