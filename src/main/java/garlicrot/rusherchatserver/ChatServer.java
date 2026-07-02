@@ -189,11 +189,15 @@ public class ChatServer extends WebSocketServer {
         String version = detectServerVersion();
         LOGGER.info("RusherChatServer version: " + version);
 
+        ChatServer server = new ChatServer(port);
+        LOGGER.info("Server config: port=" + server.port
+                + ", maxMessageLength=" + server.maxMessageLength
+                + ", minIntervalMs=" + server.minIntervalMs);
+
         // Refresh latest plugin info periodically + on-demand (stale) refresh in background
         LATEST.startBackgroundRefresh();
 
         LOGGER.info("Starting WebSocket server on port " + port + "...");
-        ChatServer server = new ChatServer(port);
         server.start();
         LOGGER.info("WebSocket server is up and running");
 
