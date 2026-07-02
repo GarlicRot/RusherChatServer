@@ -27,8 +27,15 @@ public class ChatServer extends WebSocketServer {
     private static final Logger LOGGER = Logger.getLogger(ChatServer.class.getName());
 
     private static final int DEFAULT_PORT = 42424;
-    private static final int MAX_MESSAGE_LENGTH = 256;
-    private static final long MIN_INTERVAL_MS = 1000;
+    private static final int DEFAULT_MAX_MESSAGE_LENGTH = 256;
+    private static final long DEFAULT_MIN_INTERVAL_MS = 1000;
+    private static final int MIN_USERNAME_LENGTH = 3;
+    private static final int MAX_USERNAME_LENGTH = 16;
+    private static final int MAX_PUBLIC_KEY_LENGTH = 2048;
+    private static final String USERNAME_PATTERN = "^[A-Za-z0-9_]+$";
+
+    private final int maxMessageLength;
+    private final long minIntervalMs;
 
     private static final String PLUGIN_REPO_OWNER = "GarlicRot";
     private static final String PLUGIN_REPO_NAME  = "RusherChat";
@@ -86,8 +93,18 @@ public class ChatServer extends WebSocketServer {
     }
 
     public ChatServer(int port) {
+        this(
+                port,
+                resolveIntEnv("RUSHERCHAT_MAX_MESSAGE_LENGTH", DEFAULT_MAX_MESSAGE_LENGTH, 1, 4096),
+                resolveLongEnv("RUSHERCHAT_MIN_INTERVAL_MS", DEFAULT_MIN_INTERVAL_MS, 0, 60_000)
+        );
+    }
+
+    public ChatServer(int port, int maxMessageLength, long minIntervalMs) {
         super(new InetSocketAddress("0.0.0.0", port));
         this.port = port;
+        this.maxMessageLength = maxMessageLength;
+        this.minIntervalMs = minIntervalMs;
     }
 
     private static String detectServerVersion() {
@@ -101,25 +118,86 @@ public class ChatServer extends WebSocketServer {
         }
     }
 
-    public static void main(String[] args) {
-        int port = DEFAULT_PORT;
-
+    private static int resolvePort(String[] args) {
         if (args.length > 0) {
-            try {
-                port = Integer.parseInt(args[0]);
-            } catch (NumberFormatException e) {
-                LOGGER.warning("Invalid port argument '" + args[0] + "', falling back to default: " + DEFAULT_PORT);
-            }
+            return parsePortOrDefault(args[0], "command line argument");
         }
+
+        String envPort = System.getenv("RUSHERCHAT_PORT");
+        if (envPort != null && !envPort.isBlank()) {
+            return parsePortOrDefault(envPort, "RUSHERCHAT_PORT");
+        }
+
+        return DEFAULT_PORT;
+    }
+
+    private static int parsePortOrDefault(String rawPort, String source) {
+        try {
+            int parsed = Integer.parseInt(rawPort.trim());
+            if (parsed < 1 || parsed > 65535) {
+                LOGGER.warning("Invalid port from " + source + " '" + rawPort + "', falling back to default: " + DEFAULT_PORT);
+                return DEFAULT_PORT;
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            LOGGER.warning("Invalid port from " + source + " '" + rawPort + "', falling back to default: " + DEFAULT_PORT);
+            return DEFAULT_PORT;
+        }
+    }
+
+    private static int resolveIntEnv(String envName, int defaultValue, int min, int max) {
+        String raw = System.getenv(envName);
+        if (raw == null || raw.isBlank()) {
+            return defaultValue;
+        }
+
+        try {
+            int parsed = Integer.parseInt(raw.trim());
+            if (parsed < min || parsed > max) {
+                LOGGER.warning("Invalid " + envName + " '" + raw + "', falling back to default: " + defaultValue);
+                return defaultValue;
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            LOGGER.warning("Invalid " + envName + " '" + raw + "', falling back to default: " + defaultValue);
+            return defaultValue;
+        }
+    }
+
+    private static long resolveLongEnv(String envName, long defaultValue, long min, long max) {
+        String raw = System.getenv(envName);
+        if (raw == null || raw.isBlank()) {
+            return defaultValue;
+        }
+
+        try {
+            long parsed = Long.parseLong(raw.trim());
+            if (parsed < min || parsed > max) {
+                LOGGER.warning("Invalid " + envName + " '" + raw + "', falling back to default: " + defaultValue);
+                return defaultValue;
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            LOGGER.warning("Invalid " + envName + " '" + raw + "', falling back to default: " + defaultValue);
+            return defaultValue;
+        }
+    }
+
+    public static void main(String[] args) {
+        int port = resolvePort(args);
 
         String version = detectServerVersion();
         LOGGER.info("RusherChatServer version: " + version);
+
+        ChatServer server = new ChatServer(port);
+        LOGGER.info("Server config: port=" + server.port
+                + ", maxMessageLength=" + server.maxMessageLength
+                + ", minIntervalMs=" + server.minIntervalMs);
 
         // Refresh latest plugin info periodically + on-demand (stale) refresh in background
         LATEST.startBackgroundRefresh();
 
         LOGGER.info("Starting WebSocket server on port " + port + "...");
-        ChatServer server = new ChatServer(port);
         server.start();
         LOGGER.info("WebSocket server is up and running");
 
@@ -181,7 +259,7 @@ public class ChatServer extends WebSocketServer {
 
             long now = System.currentTimeMillis();
             Long last = lastMessageTime.get(conn);
-            if (last != null && now - last < MIN_INTERVAL_MS) {
+            if (last != null && now - last < minIntervalMs) {
                 sendSystemMessage(conn, "You are sending messages too quickly. Please slow down.");
                 LOGGER.fine("Rate limit exceeded by " + username);
                 return;
@@ -265,9 +343,12 @@ public class ChatServer extends WebSocketServer {
     // --- Login / key distribution ---
     private void handleLogin(WebSocket conn, Message incoming) {
         String requestedName = incoming.getUsername();
+        if (requestedName != null) {
+            requestedName = requestedName.trim();
+        }
 
-        if (requestedName == null || requestedName.isBlank()) {
-            sendSystemMessage(conn, "Username cannot be empty.");
+        if (!isValidUsername(requestedName)) {
+            sendSystemMessage(conn, usernameRulesMessage());
             conn.close(1008, "Invalid username");
             return;
         }
@@ -286,6 +367,15 @@ public class ChatServer extends WebSocketServer {
         clientVersions.put(conn, clientVersion);
 
         String publicKeyB64 = incoming.getPublicKey();
+        if (publicKeyB64 != null) {
+            publicKeyB64 = publicKeyB64.trim();
+        }
+
+        if (publicKeyB64 != null && publicKeyB64.length() > MAX_PUBLIC_KEY_LENGTH) {
+            sendSystemMessage(conn, "Public key payload is too large.");
+            conn.close(1008, "Invalid public key");
+            return;
+        }
 
         LOGGER.info("LOGIN " + requestedName
                 + " (clientVersion=" + clientVersion + ", key=" + (publicKeyB64 != null && !publicKeyB64.isBlank() ? "yes" : "no") + ")");
@@ -338,6 +428,19 @@ public class ChatServer extends WebSocketServer {
         if (v.isEmpty()) return "unknown";
         if (v.equalsIgnoreCase("null")) return "unknown";
         return v;
+    }
+
+    private static boolean isValidUsername(String username) {
+        if (username == null) return false;
+
+        String trimmed = username.trim();
+        return trimmed.length() >= MIN_USERNAME_LENGTH
+                && trimmed.length() <= MAX_USERNAME_LENGTH
+                && trimmed.matches(USERNAME_PATTERN);
+    }
+
+    private static String usernameRulesMessage() {
+        return "Username must be 3-16 characters and use only letters, numbers, or underscore.";
     }
 
     private void maybeWarnOutdatedPlugin(WebSocket conn, String clientVersion) {
@@ -407,8 +510,8 @@ public class ChatServer extends WebSocketServer {
 
         String trimmed = content.trim();
 
-        if (trimmed.length() > MAX_MESSAGE_LENGTH) {
-            trimmed = trimmed.substring(0, MAX_MESSAGE_LENGTH);
+        if (trimmed.length() > maxMessageLength) {
+            trimmed = trimmed.substring(0, maxMessageLength);
             sendSystemMessage(userConnections.get(username.toLowerCase()), "Your message was too long and was truncated.");
             LOGGER.fine("Truncated long message from " + username);
         }
@@ -429,10 +532,14 @@ public class ChatServer extends WebSocketServer {
 
     private void handleWhisperPacket(WebSocket senderConn, String senderName, Message incoming) {
         String targetName = incoming.getTarget();
+        if (targetName != null) {
+            targetName = targetName.trim();
+        }
+
         String cipherText = incoming.getContent();
 
-        if (targetName == null || targetName.isBlank()) {
-            sendSystemMessage(senderConn, "Whisper target missing.");
+        if (!isValidUsername(targetName)) {
+            sendSystemMessage(senderConn, "Invalid whisper target. " + usernameRulesMessage());
             return;
         }
 
